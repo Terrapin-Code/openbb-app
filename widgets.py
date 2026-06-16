@@ -40,6 +40,7 @@ USE_SECTORS = [
     ("Housing", "housing"),
     ("Miscellaneous", "miscellaneous"),
     ("Recreation", "recreation"),
+    ("Securitized", "securitized"),
     ("Transportation", "transportation"),
     ("Utility", "utility"),
 ]
@@ -271,13 +272,124 @@ USES_OF_PROCEEDS_OPTIONS = [
 # Param builders
 # ---------------------------------------------------------------------------
 
-def _options(pairs: list[tuple[str, str]]) -> list[dict[str, str]]:
-    return [{"label": label, "value": value} for label, value in pairs]
+OptionPair = tuple[str, str] | tuple[str, str, str] | tuple[str, str, str, str]
 
 
-def _state_options() -> list[dict[str, str]]:
+OPTION_DESCRIPTIONS = {
+    "ALL": "Use the nationwide municipal bond universe.",
+    "Revenue": "Repaid from specific project revenues such as tolls or utilities.",
+    "General Obligation": "Repaid from the issuer's general fund.",
+    "Double Barrel": "Combines General Obligation and Revenue repayment sources.",
+    "development": "Economic and industrial development projects.",
+    "education": "Schools, colleges, universities, and student-related facilities.",
+    "government": "Essential services and general government purpose projects.",
+    "healthcare": "Healthcare systems, hospitals, and senior living facilities.",
+    "housing": "Single-family, multi-family, military, and public housing.",
+    "miscellaneous": "Uses that do not map cleanly to another use-of-funds sector.",
+    "recreation": "Cultural and recreational public facilities.",
+    "securitized": "Securitized municipal uses such as gas prepay and student loans.",
+    "transportation": "Airports, roads, bridges, ports, transit, and parking.",
+    "utility": "Water, sewer, power, gas, electrical, waste, and communications infrastructure.",
+    "fixed rate": "Pays a fixed interest rate throughout the bond's life.",
+    "variable rate": "Interest rate can change over time based on a reference rate or formula.",
+    "cab": "Capital Appreciation Bond; interest accrues and is paid at maturity.",
+    "cab-to-fixed": "Starts as a capital appreciation bond and converts to fixed rate.",
+    "step rate": "Interest rate increases at predetermined intervals.",
+    "term rate": "Pays interest at a rate set for a specific term or period.",
+    "zero rate / discount rate": "Does not pay or accrue periodic interest.",
+    "investment_grade": "Higher credit quality, generally BBB- and above.",
+    "high_yield": "Lower credit quality, generally BB+ and below.",
+    "senior": "Most senior repayment priority in the series structure.",
+    "first_lien": "First-lien claim within the bond's security structure.",
+    "second_lien": "Second-lien claim behind first-lien obligations.",
+    "subordinate": "Subordinate claim behind senior obligations.",
+    "junior": "Junior claim, generally the lowest seniority bucket.",
+    "new money": "Proceeds fund new projects or capital needs.",
+    "refunding": "Proceeds refinance or repay prior bonds.",
+    "mixed": "Proceeds combine new-money and refunding purposes.",
+    "is_federally_taxable": "Bonds whose interest is federally taxable.",
+    "is_amt": "Alternative Minimum Tax bond status.",
+    "is_bank_qualified": "Bank-qualified municipal bond status.",
+    "is_insured": "Covered by a bond insurance company.",
+    "is_green": "Designated green bond status.",
+    "is_social": "Designated social bond status.",
+    "is_sustainable": "Designated sustainable bond status.",
+    "is_pac": "Planned Amortization Class bond status.",
+    "trade_volume": "Total secondary-market par value traded.",
+    "trade_count": "Number of secondary-market trades.",
+    "customer_bought_count": "Customer-bought trade count.",
+    "customer_sold_count": "Customer-sold trade count.",
+    "inter_dealer_count": "Inter-dealer trade count.",
+    "new_issuance_par_value": "Total newly issued par value in the selected period.",
+    "new_cusip_count": "Number of newly issued CUSIPs.",
+    "issuer_count": "Number of issuing entities.",
+    "outstanding_par_value": "Total outstanding par value matching the filters.",
+    "cusip_count": "Number of outstanding CUSIPs matching the filters.",
+    "entity_count": "Number of unique issuing entities matching the filters.",
+    "traded_cusip_count": "Number of distinct CUSIPs traded.",
+}
+
+CATEGORY_DESCRIPTIONS = {
+    value: "Middle level of the Terrapin use-of-funds hierarchy."
+    for _, value in USE_CATEGORY_OPTIONS
+}
+
+PROCEEDS_DESCRIPTIONS = {
+    value: "Most granular use-of-proceeds classification in the Terrapin taxonomy."
+    for _, value in USES_OF_PROCEEDS_OPTIONS
+}
+
+GROUP_BY_DESCRIPTIONS = {
+    "none": "No grouping; return aggregate results.",
+    "state": "Group by state or territory.",
+    "source_of_repayment": "Group by how the bond is repaid.",
+    "rating_group": "Group by investment grade versus high yield.",
+    "interest_type": "Group by interest-rate structure.",
+    "seniority": "Group by repayment seniority.",
+    "capital_purpose": "Group by new money, refunding, or mixed purpose.",
+    "use_sectors": "Group by top-level use-of-funds sector.",
+    "use_categories": "Group by middle-level use-of-funds category.",
+    "uses_of_proceeds": "Group by most granular use-of-proceeds value.",
+    "is_federally_taxable": "Group federally taxable versus tax-exempt bonds.",
+    "is_amt": "Group AMT versus non-AMT bonds.",
+    "is_bank_qualified": "Group bank-qualified versus non-bank-qualified bonds.",
+    "is_insured": "Group insured versus uninsured bonds.",
+    "is_green": "Group green versus non-green bonds.",
+    "is_social": "Group social versus non-social bonds.",
+    "is_sustainable": "Group sustainable versus non-sustainable bonds.",
+    "is_pac": "Group PAC versus non-PAC bonds.",
+}
+
+
+def _option(label: str, value: str, description: str = "", right: str = "") -> dict[str, Any]:
+    option: dict[str, Any] = {"label": label, "value": value}
+    if description or right:
+        extra: dict[str, str] = {}
+        if description:
+            extra["description"] = description
+        if right:
+            extra["rightOfDescription"] = right
+        option["extraInfo"] = extra
+    return option
+
+
+def _options(pairs: list[OptionPair], descriptions: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for pair in pairs:
+        label, value = pair[0], pair[1]
+        description = pair[2] if len(pair) >= 3 else (descriptions or OPTION_DESCRIPTIONS).get(value, "")
+        right = pair[3] if len(pair) >= 4 else ""
+        result.append(_option(label, value, description, right))
+    return result
+
+
+def _state_options() -> list[dict[str, Any]]:
     return [
-        {"label": "All States" if code == ALL_STATES else code, "value": code}
+        _option(
+            "All States" if code == ALL_STATES else code,
+            code,
+            OPTION_DESCRIPTIONS["ALL"] if code == ALL_STATES else "ANSI two-letter state or territory code.",
+        )
         for code in US_STATE_CODES
     ]
 
@@ -289,7 +401,7 @@ def _param(
     label: str,
     description: str = "",
     value: str | None = "",
-    options: list[dict[str, str]] | None = None,
+    options: list[dict[str, Any]] | None = None,
     multi_select: bool = False,
     **extra: Any,
 ) -> dict[str, Any]:
@@ -321,7 +433,7 @@ def states_param(
     *,
     value: str = ALL_STATES,
     description: str = "Filter by state, or All States for nationwide",
-    multi_select: bool = True,
+    multi_select: bool = False,
 ) -> dict[str, Any]:
     return _param(
         "states",
@@ -337,10 +449,9 @@ def sources_of_repayment_param(*, value: str = "") -> dict[str, Any]:
     return _param(
         "sources_of_repayment",
         label="Source of Repayment",
-        description="How the bond is repaid",
+        description="How the bond is repaid.",
         value=value,
         options=_options(SOURCES_OF_REPAYMENT),
-        multi_select=True,
     )
 
 
@@ -359,7 +470,7 @@ def use_sectors_param(*, value: str = "") -> dict[str, Any]:
     return _param(
         "sectors",
         label="Use Sectors",
-        description="Top-level use of funds sector",
+        description="Top-level use-of-funds sector.",
         value=value,
         options=_options(USE_SECTORS),
         multi_select=True,
@@ -370,10 +481,9 @@ def interest_types_param(*, value: str = "") -> dict[str, Any]:
     return _param(
         "interest_types",
         label="Interest Types",
-        description="Types of interest",
+        description="Interest-rate structure.",
         value=value,
         options=_options(INTEREST_TYPES),
-        multi_select=True,
     )
 
 
@@ -394,42 +504,41 @@ def date_range_params(
 
 def stats_non_boolean_filter_params(*, states: str = ALL_STATES) -> list[dict[str, Any]]:
     return [
-        states_param(value=states, multi_select=True),
+        states_param(value=states),
         sources_of_repayment_param(),
         use_sectors_param(),
+        interest_types_param(),
         _param(
             "use_categories",
             label="Use Categories",
-            description="Filter by use categories",
-            options=_options(USE_CATEGORY_OPTIONS),
+            description="Middle level of the use-of-funds hierarchy.",
+            options=_options(USE_CATEGORY_OPTIONS, CATEGORY_DESCRIPTIONS),
             multi_select=True,
         ),
         _param(
             "uses_of_proceeds",
             label="Uses of Proceeds",
-            description="Filter by uses of proceeds",
-            options=_options(USES_OF_PROCEEDS_OPTIONS),
+            description="Most granular use-of-proceeds classification.",
+            options=_options(USES_OF_PROCEEDS_OPTIONS, PROCEEDS_DESCRIPTIONS),
             multi_select=True,
         ),
         _param(
             "rating_group",
             label="Rating Group",
-            description="Single rating group filter",
+            description="Investment grade or high yield.",
             options=_options(RATING_GROUP_OPTIONS),
         ),
         _param(
             "seniority",
             label="Seniority",
-            description="Filter by seniority",
+            description="Bond seniority derived from the series name.",
             options=_options(SENIORITY_OPTIONS),
-            multi_select=True,
         ),
         _param(
             "capital_purpose",
             label="Capital Purpose",
-            description="Filter by capital purpose",
+            description="Whether proceeds fund new projects, refund prior bonds, or both.",
             options=_options(CAPITAL_PURPOSE_OPTIONS),
-            multi_select=True,
         ),
     ]
 
@@ -437,18 +546,17 @@ def stats_non_boolean_filter_params(*, states: str = ALL_STATES) -> list[dict[st
 def stats_compact_filter_params(*, states: str = ALL_STATES) -> list[dict[str, Any]]:
     """Keep only the most intuitive, high-signal stats filters."""
     return [
-        states_param(value=states, multi_select=True),
+        states_param(value=states),
         sources_of_repayment_param(),
         use_sectors_param(),
     ]
 
 
-def _boolean_filter_options(default_label: str, param_name: str) -> list[dict[str, str]]:
-    pretty_name = param_name.removeprefix("is_")
+def _boolean_filter_options(default_label: str, param_name: str) -> list[dict[str, Any]]:
     return [
-        {"label": default_label, "value": ""},
-        {"label": param_name, "value": "true"},
-        {"label": f"is not {pretty_name}", "value": "false"},
+        _option(f"All {default_label}", "", f"Do not filter on {default_label.lower()} status."),
+        _option(f"Yes: {default_label}", "true", OPTION_DESCRIPTIONS.get(param_name, "")),
+        _option(f"No: {default_label}", "false", f"Exclude bonds where {default_label.lower()} is true."),
     ]
 
 
@@ -457,56 +565,56 @@ def stats_yes_no_filter_params() -> list[dict[str, Any]]:
         _param(
             "is_federally_taxable",
             label="Federally Taxable",
-            description="Optional boolean filter",
+            description=OPTION_DESCRIPTIONS["is_federally_taxable"],
             value="",
             options=_boolean_filter_options("Federally Taxable", "is_federally_taxable"),
         ),
         _param(
             "is_amt",
             label="AMT",
-            description="Optional boolean filter",
+            description=OPTION_DESCRIPTIONS["is_amt"],
             value="",
             options=_boolean_filter_options("AMT", "is_amt"),
         ),
         _param(
             "is_bank_qualified",
             label="Bank Qualified",
-            description="Optional boolean filter",
+            description=OPTION_DESCRIPTIONS["is_bank_qualified"],
             value="",
             options=_boolean_filter_options("Bank Qualified", "is_bank_qualified"),
         ),
         _param(
             "is_insured",
             label="Insured",
-            description="Optional boolean filter",
+            description=OPTION_DESCRIPTIONS["is_insured"],
             value="",
             options=_boolean_filter_options("Insured", "is_insured"),
         ),
         _param(
             "is_green",
             label="Green",
-            description="Optional boolean filter",
+            description=OPTION_DESCRIPTIONS["is_green"],
             value="",
             options=_boolean_filter_options("Green", "is_green"),
         ),
         _param(
             "is_social",
             label="Social",
-            description="Optional boolean filter",
+            description=OPTION_DESCRIPTIONS["is_social"],
             value="",
             options=_boolean_filter_options("Social", "is_social"),
         ),
         _param(
             "is_sustainable",
             label="Sustainable",
-            description="Optional boolean filter",
+            description=OPTION_DESCRIPTIONS["is_sustainable"],
             value="",
             options=_boolean_filter_options("Sustainable", "is_sustainable"),
         ),
         _param(
             "is_pac",
             label="PAC",
-            description="Optional boolean filter",
+            description=OPTION_DESCRIPTIONS["is_pac"],
             value="",
             options=_boolean_filter_options("PAC", "is_pac"),
         ),
@@ -518,6 +626,51 @@ def stats_filter_params(*, states: str = ALL_STATES) -> list[dict[str, Any]]:
         *stats_non_boolean_filter_params(states=states),
         *stats_yes_no_filter_params(),
     ]
+
+
+def stats_filter_param_rows(*, states: str = ALL_STATES) -> list[list[dict[str, Any]]]:
+    filters = {param["paramName"]: param for param in stats_filter_params(states=states)}
+    return [
+        [
+            filters["states"],
+            filters["sources_of_repayment"],
+            filters["rating_group"],
+        ],
+        [
+            filters["sectors"],
+            filters["use_categories"],
+            filters["uses_of_proceeds"],
+        ],
+        [
+            filters["interest_types"],
+            filters["seniority"],
+            filters["capital_purpose"],
+        ],
+        [
+            filters["is_federally_taxable"],
+            filters["is_amt"],
+            filters["is_bank_qualified"],
+            filters["is_insured"],
+        ],
+        [
+            filters["is_green"],
+            filters["is_social"],
+            filters["is_sustainable"],
+            filters["is_pac"],
+        ],
+    ]
+
+
+def hidden_shared_stats_param_rows(*, states: str = ALL_STATES) -> list[list[dict[str, Any]]]:
+    rows = hide_shared_stats_params(stats_filter_param_rows(states=states))
+    return [[param for row in rows for param in row]]
+
+
+def hidden_stats_filter_param_row(*, states: str = ALL_STATES) -> list[list[dict[str, Any]]]:
+    params = copy.deepcopy(stats_filter_params(states=states))
+    for param in params:
+        param["show"] = False
+    return [params]
 
 
 def stats_metrics_param(*, options: list[tuple[str, str]], value: str) -> dict[str, Any]:
@@ -546,17 +699,7 @@ def stats_group_by_param(*, value: str = "none") -> dict[str, Any]:
         label="Group By",
         description="Optional dimension for grouped stats",
         value=value,
-        options=_options(GROUP_BY_OPTIONS),
-    )
-
-
-def chart_title_param(*, value: str = "", show: bool = True) -> dict[str, Any]:
-    return _param(
-        "title",
-        label="Title",
-        description="Optional chart title annotation",
-        value=value,
-        show=show,
+        options=_options(GROUP_BY_OPTIONS, GROUP_BY_DESCRIPTIONS),
     )
 
 
@@ -613,6 +756,32 @@ def stats_kv_table() -> dict[str, Any]:
             "columnsDefs": [
                 table_col("metric", "Metric", cellDataType="text", flex=2),
                 table_col("value", "Value", cellDataType="text", flex=2),
+            ],
+        },
+    }
+
+
+def aggrid_stacked_stats_chart_data() -> dict[str, Any]:
+    return {
+        "table": {
+            "chartView": {
+                "enabled": True,
+                "chartType": "stackedColumn",
+            },
+        },
+    }
+
+
+def aggrid_top_issuers_chart_data() -> dict[str, Any]:
+    return {
+        "table": {
+            "chartView": {
+                "enabled": True,
+                "chartType": "groupedBar",
+            },
+            "columnsDefs": [
+                table_col("issuer_name", "Issuer", cellDataType="text", chartDataType="category", flex=3),
+                table_col("value", "Value", cellDataType="number", chartDataType="series", flex=2),
             ],
         },
     }
@@ -724,57 +893,13 @@ WIDGETS: dict[str, dict[str, Any]] = {
     },
 
     "muni_stats_filters": {
-        "name": "Filters",
+        "name": "Market Activity Filters",
         "description": "Shared filters for the Market Activity widgets.",
-        "type": "markdown",
+        "type": "html",
         "endpoint": "/muni/stats/filters_summary",
-        "gridData": {"w": 40, "h": 8},
-        "runButton": True,
-        "params": [
-            [
-                states_param(),
-                sources_of_repayment_param(),
-                use_sectors_param(),
-                interest_types_param(),
-                _param(
-                    "use_categories",
-                    label="Use Categories",
-                    description="Filter by use categories",
-                    options=_options(USE_CATEGORY_OPTIONS),
-                    multi_select=True,
-                ),
-                _param(
-                    "uses_of_proceeds",
-                    label="Uses of Proceeds",
-                    description="Filter by uses of proceeds",
-                    options=_options(USES_OF_PROCEEDS_OPTIONS),
-                    multi_select=True,
-                ),
-                _param(
-                    "rating_group",
-                    label="Rating Group",
-                    description="Single rating group filter",
-                    options=_options(RATING_GROUP_OPTIONS),
-                ),
-                _param(
-                    "seniority",
-                    label="Seniority",
-                    description="Filter by seniority",
-                    options=_options(SENIORITY_OPTIONS),
-                    multi_select=True,
-                ),
-                _param(
-                    "capital_purpose",
-                    label="Capital Purpose",
-                    description="Filter by capital purpose",
-                    options=_options(CAPITAL_PURPOSE_OPTIONS),
-                    multi_select=True,
-                ),
-            ],
-            [
-                *stats_yes_no_filter_params(),
-            ]
-        ],
+        "gridData": {"w": 40, "h": 19},
+        "runButton": False,
+        "params": hidden_stats_filter_param_row(),
     },
 
     "muni_stats_outstanding": {
@@ -783,8 +908,9 @@ WIDGETS: dict[str, dict[str, Any]] = {
         "type": "table",
         "endpoint": "/muni/stats/outstanding",
         "gridData": {"w": 13, "h": 12},
-        "runButton": True,
-        "params": hide_shared_stats_params([
+        "runButton": False,
+        "params": [
+            *hidden_shared_stats_param_rows(),
             [
                 stats_group_by_param(value="use_sectors"),
                 stats_metrics_param(
@@ -792,9 +918,7 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     value="outstanding_par_value",
                 ),
             ],
-            [*stats_non_boolean_filter_params()],
-            [*stats_yes_no_filter_params()],
-        ]),
+        ],
         "data": {
             "table": {
                 "columnsDefs": [
@@ -810,11 +934,12 @@ WIDGETS: dict[str, dict[str, Any]] = {
     "muni_stats_issuance": {
         "name": "Issuance",
         "description": "Time series issuance stats over the selected date range and filters.",
-        "type": "chart",
-        "endpoint": "/muni/stats/issuance_chart",
+        "type": "table",
+        "endpoint": "/muni/stats/issuance_aggrid_chart",
         "gridData": {"w": 13, "h": 12},
-        "runButton": True,
-        "params": hide_shared_stats_params([
+        "runButton": False,
+        "params": [
+            *hidden_shared_stats_param_rows(),
             [
                 stats_group_by_param(),
                 stats_metrics_param(
@@ -823,11 +948,9 @@ WIDGETS: dict[str, dict[str, Any]] = {
                 ),
                 stats_period_param(value="month"),
                 *date_range_params(start="2025-01-01"),
-                chart_title_param(),
             ],
-            [*stats_non_boolean_filter_params()],
-            [*stats_yes_no_filter_params()],
-        ]),
+        ],
+        "data": aggrid_stacked_stats_chart_data(),
     },
 
     "muni_stats_trade_activity": {
@@ -836,8 +959,9 @@ WIDGETS: dict[str, dict[str, Any]] = {
         "type": "chart",
         "endpoint": "/muni/stats/trade_activity_chart",
         "gridData": {"w": 14, "h": 12},
-        "runButton": True,
-        "params": hide_shared_stats_params([
+        "runButton": False,
+        "params": [
+            *hidden_shared_stats_param_rows(),
             [
                 stats_group_by_param(),
                 stats_metrics_param(
@@ -846,11 +970,8 @@ WIDGETS: dict[str, dict[str, Any]] = {
                 ),
                 stats_period_param(value="month"),
                 *date_range_params(start="2025-01-01"),
-                chart_title_param(),
             ],
-            [*stats_non_boolean_filter_params()],
-            [*stats_yes_no_filter_params()],
-        ]),
+        ],
     },
 
     "muni_stats_outstanding_seniority": {
@@ -859,8 +980,9 @@ WIDGETS: dict[str, dict[str, Any]] = {
         "type": "table",
         "endpoint": "/muni/stats/outstanding",
         "gridData": {"w": 20, "h": 16},
-        "runButton": True,
-        "params": hide_shared_stats_params([
+        "runButton": False,
+        "params": [
+            *hidden_shared_stats_param_rows(),
             [
                 stats_group_by_param(value="seniority"),
                 stats_metrics_param(
@@ -868,9 +990,7 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     value="outstanding_par_value",
                 ),
             ],
-            [*stats_non_boolean_filter_params()],
-            [*stats_yes_no_filter_params()],
-        ]),
+        ],
         "data": {
             "table": {
                 "columnsDefs": [
@@ -886,11 +1006,12 @@ WIDGETS: dict[str, dict[str, Any]] = {
     "muni_stats_trade_volume_monthly": {
         "name": "Trade Activity: Volume Trend",
         "description": "Trade volume trend for the selected period.",
-        "type": "chart",
-        "endpoint": "/muni/stats/trade_activity_chart",
+        "type": "table",
+        "endpoint": "/muni/stats/trade_activity_aggrid_chart",
         "gridData": {"w": 20, "h": 16},
-        "runButton": True,
-        "params": hide_shared_stats_params([
+        "runButton": False,
+        "params": [
+            *hidden_shared_stats_param_rows(),
             [
                 stats_group_by_param(value="none"),
                 stats_metrics_param(
@@ -899,11 +1020,9 @@ WIDGETS: dict[str, dict[str, Any]] = {
                 ),
                 stats_period_param(value="month"),
                 *date_range_params(start="2025-01-01"),
-                chart_title_param(),
             ],
-            [*stats_non_boolean_filter_params()],
-            [*stats_yes_no_filter_params()],
-        ]),
+        ],
+        "data": aggrid_stacked_stats_chart_data(),
     },
 
     "muni_stats_trade_customer_bought_monthly": {
@@ -912,8 +1031,9 @@ WIDGETS: dict[str, dict[str, Any]] = {
         "type": "chart",
         "endpoint": "/muni/stats/trade_activity_chart",
         "gridData": {"w": 20, "h": 16},
-        "runButton": True,
-        "params": hide_shared_stats_params([
+        "runButton": False,
+        "params": [
+            *hidden_shared_stats_param_rows(),
             [
                 stats_group_by_param(value="none"),
                 stats_metrics_param(
@@ -922,11 +1042,8 @@ WIDGETS: dict[str, dict[str, Any]] = {
                 ),
                 stats_period_param(value="month"),
                 *date_range_params(start="2025-01-01"),
-                chart_title_param(value="Customer Bought by Month"),
             ],
-            [*stats_non_boolean_filter_params()],
-            [*stats_yes_no_filter_params()],
-        ]),
+        ],
     },
 
     "muni_stats_issuance_interest_type": {
@@ -935,8 +1052,9 @@ WIDGETS: dict[str, dict[str, Any]] = {
         "type": "chart",
         "endpoint": "/muni/stats/issuance_chart",
         "gridData": {"w": 20, "h": 16},
-        "runButton": True,
-        "params": hide_shared_stats_params([
+        "runButton": False,
+        "params": [
+            *hidden_shared_stats_param_rows(),
             [
                 stats_group_by_param(value="interest_type"),
                 stats_metrics_param(
@@ -945,11 +1063,8 @@ WIDGETS: dict[str, dict[str, Any]] = {
                 ),
                 stats_period_param(value="month"),
                 *date_range_params(start="2025-01-01"),
-                chart_title_param(value="Issuance by Interest Type"),
             ],
-            [*stats_non_boolean_filter_params()],
-            [*stats_yes_no_filter_params()],
-        ]),
+        ],
     },
 
     "muni_stats_issuance_sector": {
@@ -958,8 +1073,9 @@ WIDGETS: dict[str, dict[str, Any]] = {
         "type": "chart",
         "endpoint": "/muni/stats/issuance_chart",
         "gridData": {"w": 20, "h": 16},
-        "runButton": True,
-        "params": hide_shared_stats_params([
+        "runButton": False,
+        "params": [
+            *hidden_shared_stats_param_rows(),
             [
                 stats_group_by_param(value="use_sectors"),
                 stats_metrics_param(
@@ -968,11 +1084,8 @@ WIDGETS: dict[str, dict[str, Any]] = {
                 ),
                 stats_period_param(value="month"),
                 *date_range_params(start="2025-01-01"),
-                chart_title_param(value="Issuance by Sector"),
             ],
-            [*stats_non_boolean_filter_params()],
-            [*stats_yes_no_filter_params()],
-        ]),
+        ],
     },
 
     "muni_stats_top_issuers": {
@@ -981,19 +1094,21 @@ WIDGETS: dict[str, dict[str, Any]] = {
         "type": "table",
         "endpoint": "/muni/stats/top_issuers",
         "gridData": {"w": 40, "h": 18},
-        "runButton": True,
-        "params": hide_shared_stats_params([
-            *date_range_params(start="2025-01-01"),
-            _param(
-                "rank_by",
-                label="Rank By",
-                description="Metric used to rank issuers",
-                value="trade_volume",
-                options=_options(RANK_BY_OPTIONS),
-            ),
-            _param("limit", label="Limit", description="Maximum number of issuers", value="25"),
-            *stats_filter_params(),
-        ]),
+        "runButton": False,
+        "params": [
+            *hidden_shared_stats_param_rows(),
+            [
+                _param(
+                    "rank_by",
+                    label="Rank By",
+                    description="Metric used to rank issuers",
+                    value="trade_volume",
+                    options=_options(RANK_BY_OPTIONS),
+                ),
+                _param("limit", label="Limit", description="Maximum number of issuers", value="25"),
+                *date_range_params(start="2025-01-01"),
+            ],
+        ],
         "data": {
             "table": {
                 "columnsDefs": [
@@ -1013,13 +1128,13 @@ WIDGETS: dict[str, dict[str, Any]] = {
     "muni_stats_top_issuers_chart": {
         "name": "Top Issuers Chart",
         "description": "Bar chart of top issuers by selected metric.",
-        "type": "chart",
-        "endpoint": "/muni/stats/top_issuers_chart",
+        "type": "table",
+        "endpoint": "/muni/stats/top_issuers_aggrid_chart",
         "gridData": {"w": 20, "h": 18},
-        "runButton": True,
-        "params": hide_shared_stats_params([
+        "runButton": False,
+        "params": [
+            *hidden_shared_stats_param_rows(),
             [
-                *date_range_params(start="2025-01-01"),
                 _param(
                     "rank_by",
                     label="Rank By",
@@ -1028,10 +1143,9 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     options=_options(RANK_BY_OPTIONS),
                 ),
                 _param("limit", label="Limit", description="Maximum number of issuers", value="25"),
-                chart_title_param(),
+                *date_range_params(start="2025-01-01"),
             ],
-            [*stats_non_boolean_filter_params()],
-            [*stats_yes_no_filter_params()],
-        ]),
+        ],
+        "data": aggrid_top_issuers_chart_data(),
     },
 }

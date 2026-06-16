@@ -9,10 +9,10 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from formatters import fmt, fmt_coupon, fmt_enum, fmt_par, cashflows_markdown, ref_markdown
-from widgets import ALL_STATES, WIDGETS
+from widgets import ALL_STATES, WIDGETS, stats_filter_params
 
 load_dotenv()
 
@@ -244,12 +244,15 @@ def _stats_filters_query(
 
 
 def _post_muni_stats_rows(endpoint: str, body: dict) -> list[dict]:
-    with httpx.Client(timeout=30) as client:
-        resp = client.post(
-            f"{TERRAPIN_BASE_URL}/api/v1/{endpoint}",
-            headers=terrapin_headers(),
-            json=body,
-        )
+    try:
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(
+                f"{TERRAPIN_BASE_URL}/api/v1/{endpoint}",
+                headers=terrapin_headers(),
+                json=body,
+            )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail=f"Terrapin stats request timed out for {endpoint}.") from exc
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     data = resp.json().get("data", [])
@@ -477,6 +480,45 @@ def _stacked_bar_chart(
     }
 
 
+def _stats_rows_for_aggrid_chart(
+    rows: list[dict],
+    *,
+    metric_key: str,
+    metric_label: str,
+    period: str,
+    group_by: str,
+) -> list[dict]:
+    if not rows:
+        return []
+
+    period_values: list[str] = []
+    group_values: list[str] = []
+    grouped_values: dict[str, dict[str, float]] = {}
+    for row in rows:
+        period_value = str(row.get("period") or "all") if period != "all" else "all"
+        group_value = (
+            str(row.get("group_key") if row.get("group_key") is not None else "undefined")
+            if group_by != "none"
+            else metric_label
+        )
+        if period_value not in period_values:
+            period_values.append(period_value)
+        if group_value not in group_values:
+            group_values.append(group_value)
+        grouped_values.setdefault(period_value, {})[group_value] = float(row.get(metric_key) or 0)
+
+    return [
+        {
+            "period": period_value,
+            **{
+                group_value: grouped_values.get(period_value, {}).get(group_value, 0)
+                for group_value in group_values
+            },
+        }
+        for period_value in period_values
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Manifest endpoints
 # ---------------------------------------------------------------------------
@@ -490,6 +532,11 @@ def get_widgets():
 def get_apps():
     with open(APPS_FILE, encoding="utf-8") as f:
         return JSONResponse(content=json.load(f), headers=_NO_CACHE_HEADERS)
+
+
+@app.get("/agents.json")
+def get_agents():
+    return JSONResponse(content={}, headers=_NO_CACHE_HEADERS)
 
 
 # ---------------------------------------------------------------------------
@@ -724,92 +771,517 @@ def muni_search(
 # Market statistics
 # ---------------------------------------------------------------------------
 
-@app.get("/muni/stats/filters_summary")
+@app.get("/muni/stats/filters_summary", response_class=HTMLResponse)
 def muni_stats_filters_summary(
     filters: dict = Depends(_stats_filters_query),
+    theme: str = Query("dark", description="OpenBB workspace theme (dark/light)"),
 ):
-    states = filters["states"]
-    sources_of_repayment = filters["sources_of_repayment"]
-    sectors = filters["sectors"]
-    use_categories = filters["use_categories"]
-    uses_of_proceeds = filters["uses_of_proceeds"]
-    rating_group = filters["rating_group"]
-    interest_types = filters["interest_types"]
-    seniority = filters["seniority"]
-    capital_purpose = filters["capital_purpose"]
-    is_federally_taxable = filters["is_federally_taxable"]
-    is_amt = filters["is_amt"]
-    is_bank_qualified = filters["is_bank_qualified"]
-    is_insured = filters["is_insured"]
-    is_green = filters["is_green"]
-    is_social = filters["is_social"]
-    is_sustainable = filters["is_sustainable"]
-    is_pac = filters["is_pac"]
-
-    states_value = ", ".join([s for s in _csv(states) if s.upper() != ALL_STATES]) if states else "All States"
-    sources_value = ", ".join(_csv(sources_of_repayment)) if sources_of_repayment else "All"
-    sectors_value = ", ".join(_csv(sectors)) if sectors else "All"
-    categories_value = ", ".join(_csv(use_categories)) if use_categories else "All"
-    proceeds_value = ", ".join(_csv(uses_of_proceeds)) if uses_of_proceeds else "All"
-    interest_value = ", ".join(_csv(interest_types)) if interest_types else "All"
-    seniority_value = ", ".join(_csv(seniority)) if seniority else "All"
-    capital_value = ", ".join(_csv(capital_purpose)) if capital_purpose else "All"
-    rating_value = rating_group or "All"
-    yn = lambda v: "Yes" if v is True else "No"
-    non_boolean_cells = [
-        ("States", states_value),
-        ("Source of Repayment", sources_value),
-        ("Use Sectors", sectors_value),
-        ("Use Categories", categories_value),
-        ("Uses of Proceeds", proceeds_value),
-        ("Rating Group", rating_value),
-        ("Interest Types", interest_value),
-        ("Seniority", seniority_value),
-        ("Capital Purpose", capital_value),
+    filter_sections = [
+        ("Geography & Credit", ["states", "sources_of_repayment", "rating_group"]),
+        ("Use of Funds", ["sectors", "use_categories", "uses_of_proceeds"]),
+        ("Structure", ["interest_types", "seniority", "capital_purpose"]),
+        (
+            "Flags",
+            [
+                "is_federally_taxable",
+                "is_amt",
+                "is_bank_qualified",
+                "is_insured",
+                "is_green",
+                "is_social",
+                "is_sustainable",
+                "is_pac",
+            ],
+        ),
     ]
-    boolean_cells = []
-    for label, value in [
-        ("Federally Taxable", is_federally_taxable),
-        ("AMT", is_amt),
-        ("Bank Qualified", is_bank_qualified),
-        ("Insured", is_insured),
-        ("Green", is_green),
-        ("Social", is_social),
-        ("Sustainable", is_sustainable),
-        ("PAC", is_pac),
-    ]:
-        if value is not None:
-            boolean_cells.append((label, yn(value)))
-    if not boolean_cells:
-        boolean_cells = [("Boolean Filters", "None")]
+    param_defs = {param["paramName"]: param for param in stats_filter_params()}
 
-    def _row(items: list[tuple[str, str]]) -> str:
-        return "<tr>" + "".join(
-            (
-                "<td style='text-align:left; vertical-align:top; padding:6px 10px; border-bottom:1px solid rgba(120,140,170,0.25);'>"
-                f"<strong>{escape(label)}:</strong> {escape(value)}"
-                "</td>"
+    def _normalise_value(param_name: str, value: object) -> str:
+        if param_name == "states":
+            return str(value or ALL_STATES)
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if value is None:
+            return ""
+        return str(value)
+
+    def _default_value(param_name: str) -> str:
+        return ALL_STATES if param_name == "states" else ""
+
+    def _control(param_name: str) -> dict:
+        param = param_defs[param_name]
+        options = []
+        for option in param.get("options", []):
+            options.append(
+                {
+                    "label": option.get("label") or option.get("value") or "All",
+                    "value": option.get("value") or "",
+                    "description": (option.get("extraInfo") or {}).get("description", ""),
+                }
             )
-            if label
-            else "<td style='padding:6px 10px;'></td>"
-            for label, value in items
-        ) + "</tr>"
 
-    markdown = "\n".join(
-        [
-            "### Active Shared Filters",
-            "",
-            "<table style='width:100%; border-collapse:collapse; text-align:left;'>",
-            "<tbody>",
-            _row(non_boolean_cells),
-            _row(boolean_cells),
-            "</tbody>",
-            "</table>",
-            "",
-            "These filters are shared across the Market Activity widgets below.",
-        ]
-    )
-    return PlainTextResponse(markdown)
+        if not param.get("multiSelect") and not any(option["value"] == "" for option in options):
+            options.insert(
+                0,
+                {
+                    "label": f"All {param.get('label', param_name)}",
+                    "value": "",
+                    "description": f"Do not filter by {param.get('label', param_name).lower()}.",
+                },
+            )
+
+        option_values = {option["value"] for option in options}
+        return {
+            "name": param_name,
+            "label": param.get("label", param_name),
+            "description": param.get("description", ""),
+            "multiSelect": bool(param.get("multiSelect")),
+            "isTernaryBoolean": option_values == {"", "true", "false"},
+            "defaultValue": _default_value(param_name),
+            "value": _normalise_value(param_name, filters.get(param_name)),
+            "options": options,
+        }
+
+    controls = [
+        {
+            "title": section_title,
+            "controls": [_control(param_name) for param_name in param_names],
+        }
+        for section_title, param_names in filter_sections
+    ]
+    controls_json = json.dumps(controls)
+    initial_state = {
+        control["name"]: control["value"]
+        for section in controls
+        for control in section["controls"]
+    }
+    initial_state_json = json.dumps(initial_state)
+    resolved_theme = "light" if theme.strip().lower() == "light" else "dark"
+
+    html = f"""<!doctype html>
+<html lang="en" data-theme="{resolved_theme}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {{
+  color-scheme: dark light;
+  --bg: #131417;
+  --surface: #1c1e23;
+  --surface-soft: #252932;
+  --border: rgba(255,255,255,.12);
+  --text: #f5f5f5;
+  --muted: #a9adb8;
+  --accent: #4da3ff;
+  --accent-soft: rgba(77,163,255,.16);
+  --danger: #ff6f61;
+}}
+:root[data-theme="light"] {{
+  --bg: #ffffff;
+  --surface: #f5f7fa;
+  --surface-soft: #eef2f7;
+  --border: rgba(24,31,42,.14);
+  --text: #1f2937;
+  --muted: #596273;
+  --accent: #0b66c3;
+  --accent-soft: rgba(11,102,195,.12);
+  --danger: #b42318;
+}}
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0;
+  padding: 8px 10px 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: auto;
+}}
+.header {{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}}
+.count {{
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}}
+.grid {{
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}}
+.filter-section {{
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 7px;
+  padding: 6px;
+}}
+.filter-section.flags {{
+  grid-column: 1 / -1;
+}}
+.filter-section.flags .controls {{
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}}
+.filter-section.flags .description {{
+  -webkit-line-clamp: 1;
+}}
+h2 {{
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}}
+.controls {{
+  display: grid;
+  gap: 5px;
+}}
+.control {{
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  padding: 5px;
+}}
+.control.active {{
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  background: var(--accent-soft);
+}}
+.control-head {{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}}
+.label {{
+  color: var(--text);
+  font-weight: 620;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}}
+.value {{
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}}
+.description {{
+  color: var(--muted);
+  font-size: 10.5px;
+  margin: 3px 0 5px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}}
+.select-row {{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+}}
+select {{
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  padding: 0 6px;
+}}
+button {{
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}}
+button:hover, select:hover {{
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
+}}
+.segments {{
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}}
+.segments.boolean {{
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}}
+.segments button {{
+  min-width: 0;
+  padding: 0 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}}
+.segments button.selected {{
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}}
+.chips {{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 5px;
+}}
+.selected-chip {{
+  max-width: 100%;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}}
+.selected-chip span {{
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}}
+.selected-chip b {{
+  color: var(--danger);
+  font-weight: 700;
+}}
+.clear {{
+  padding: 0 7px;
+  color: var(--muted);
+}}
+.clear-all {{
+  padding: 0 8px;
+  color: var(--muted);
+}}
+.header-actions {{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}}
+@media (max-width: 760px) {{
+  .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+  .filter-section.flags .controls {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+}}
+@media (max-width: 520px) {{
+  body {{ padding: 8px; }}
+  .grid {{ grid-template-columns: 1fr; }}
+  .filter-section.flags .controls {{ grid-template-columns: 1fr; }}
+}}
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="count" id="count">0 active filters</div>
+    <div class="header-actions">
+      <button class="clear-all" data-action="clear-all">Clear all</button>
+    </div>
+  </div>
+  <main class="grid" id="filters"></main>
+  <script>
+    (() => {{
+      const sections = {controls_json};
+      const state = {initial_state_json};
+      const controls = sections.flatMap((section) => section.controls);
+      const byName = new Map(controls.map((control) => [control.name, control]));
+      const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({{
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\\"": "&quot;",
+        "'": "&#39;"
+      }}[char]));
+      const splitValues = (value) => String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+      const selectedValues = (control) => {{
+        const raw = state[control.name] ?? control.defaultValue ?? "";
+        if (control.name === "states" && (!raw || raw === "ALL")) return [];
+        if (!raw) return [];
+        return splitValues(raw).filter((value) => value !== "ALL");
+      }};
+      const optionLabel = (control, value) => {{
+        const option = control.options.find((item) => item.value === value);
+        return option?.label || value || `All ${{control.label}}`;
+      }};
+      const isActive = (control) => {{
+        const raw = state[control.name] ?? control.defaultValue ?? "";
+        if (control.name === "states") return Boolean(raw && raw !== "ALL");
+        return raw !== "";
+      }};
+      const displayValue = (control) => {{
+        if (control.multiSelect) {{
+          const values = selectedValues(control);
+          if (values.length === 0) return control.name === "states" ? "All States" : "All";
+          return values.map((value) => optionLabel(control, value)).join(", ");
+        }}
+        if (control.isTernaryBoolean && !(state[control.name] ?? "")) return "Any";
+        return optionLabel(control, state[control.name] ?? control.defaultValue ?? "");
+      }};
+      const activeCount = () => controls.reduce((count, control) => count + (isActive(control) ? 1 : 0), 0);
+      const serialiseParams = () => Object.fromEntries(
+        controls.map((control) => [control.name, state[control.name] ?? control.defaultValue ?? ""])
+      );
+      const emitParams = (paramName) => {{
+        const params = serialiseParams();
+        const message = {{
+          type: "openbb:widget-params:update",
+          paramName,
+          value: paramName === "*" ? undefined : params[paramName],
+          params
+        }};
+        window.dispatchEvent(new CustomEvent("openbb:widget-params:update", {{ detail: message }}));
+        if (window.parent && window.parent !== window) {{
+          window.parent.postMessage(message, "*");
+        }}
+      }};
+      const setValue = (control, value) => {{
+        state[control.name] = value || control.defaultValue || "";
+        if (control.name === "states" && !state[control.name]) state[control.name] = "ALL";
+      }};
+      const toggleMultiValue = (control, value) => {{
+        if (!value || value === control.defaultValue) {{
+          setValue(control, control.defaultValue);
+          return;
+        }}
+        const values = selectedValues(control);
+        const next = values.includes(value)
+          ? values.filter((item) => item !== value)
+          : [...values, value];
+        setValue(control, next.length ? next.join(",") : control.defaultValue);
+      }};
+      const multiControl = (control) => {{
+        const chips = selectedValues(control).map((value) => `
+          <button class="selected-chip" data-action="remove" data-param="${{esc(control.name)}}" data-value="${{esc(value)}}" title="Remove ${{esc(optionLabel(control, value))}}">
+            <span>${{esc(optionLabel(control, value))}}</span><b>x</b>
+          </button>
+        `).join("");
+        const options = control.options.map((option) => `
+          <option value="${{esc(option.value)}}" title="${{esc(option.description)}}">${{esc(option.label)}}</option>
+        `).join("");
+        return `
+          <div class="chips">${{chips || `<span class="value">${{control.name === "states" ? "All States" : "All values"}}</span>`}}</div>
+          <div class="select-row">
+            <select data-action="select" data-param="${{esc(control.name)}}" aria-label="${{esc(control.label)}}">
+              <option value="">Add or toggle...</option>
+              ${{options}}
+            </select>
+            <button class="clear" data-action="clear" data-param="${{esc(control.name)}}">Clear</button>
+          </div>
+        `;
+      }};
+      const singleOptions = (control) => control.isTernaryBoolean
+        ? control.options.filter((option) => option.value !== "")
+        : control.options;
+      const singleOptionLabel = (control, option) => control.isTernaryBoolean
+        ? option.label.replace(/^(Yes|No):.*$/, "$1")
+        : option.label.replace(/^All /, "All ");
+      const segmentControl = (control) => `
+        <div class="segments ${{control.isTernaryBoolean ? "boolean" : ""}}">
+          ${{singleOptions(control).map((option) => `
+            <button data-action="set" data-param="${{esc(control.name)}}" data-value="${{esc(option.value)}}"
+              class="${{(state[control.name] ?? "") === option.value ? "selected" : ""}}"
+              title="${{esc(option.description)}}">
+              ${{esc(singleOptionLabel(control, option))}}
+            </button>
+          `).join("")}}
+        </div>
+      `;
+      const singleSelectControl = (control) => {{
+        const selected = state[control.name] ?? control.defaultValue ?? "";
+        const hasBlankOption = control.options.some((option) => option.value === "");
+        const blankOption = control.name === "states" || hasBlankOption
+          ? ""
+          : `<option value="" ${{!selected ? "selected" : ""}}>All ${{esc(control.label)}}</option>`;
+        const options = control.options.map((option) => `
+          <option value="${{esc(option.value)}}"
+            ${{selected === option.value ? "selected" : ""}}
+            title="${{esc(option.description)}}">
+            ${{esc(option.label)}}
+          </option>
+        `).join("");
+        return `
+          <div class="select-row">
+            <select data-action="single-select" data-param="${{esc(control.name)}}" aria-label="${{esc(control.label)}}">
+              ${{blankOption}}
+              ${{options}}
+            </select>
+            <button class="clear" data-action="clear" data-param="${{esc(control.name)}}">Clear</button>
+          </div>
+        `;
+      }};
+      const singleControl = (control) => control.isTernaryBoolean
+        ? segmentControl(control)
+        : singleSelectControl(control);
+      const controlMarkup = (control) => `
+        <article class="control ${{isActive(control) ? "active" : ""}}" data-control="${{esc(control.name)}}">
+          <div class="control-head">
+            <div class="label" title="${{esc(control.label)}}">${{esc(control.label)}}</div>
+            <div class="value" title="${{esc(displayValue(control))}}">${{esc(displayValue(control))}}</div>
+          </div>
+          <p class="description" title="${{esc(control.description)}}">${{esc(control.description)}}</p>
+          ${{control.multiSelect ? multiControl(control) : singleControl(control)}}
+        </article>
+      `;
+      const render = () => {{
+        document.getElementById("count").textContent = `${{activeCount()}} active filters`;
+        document.getElementById("filters").innerHTML = sections.map((section) => `
+          <section class="filter-section ${{section.title === "Flags" ? "flags" : ""}}">
+            <h2>${{esc(section.title)}}</h2>
+            <div class="controls">${{section.controls.map(controlMarkup).join("")}}</div>
+          </section>
+        `).join("");
+      }};
+      document.addEventListener("change", (event) => {{
+        const target = event.target.closest("[data-action='select'], [data-action='single-select']");
+        if (!target) return;
+        const control = byName.get(target.dataset.param);
+        if (!control) return;
+        if (target.dataset.action === "single-select") {{
+          setValue(control, target.value);
+        }} else {{
+          toggleMultiValue(control, target.value);
+          target.value = "";
+        }}
+        render();
+        emitParams(control.name);
+      }});
+      document.addEventListener("click", (event) => {{
+        const target = event.target.closest("[data-action]");
+        if (!target || target.dataset.action === "select" || target.dataset.action === "single-select") return;
+        if (target.dataset.action === "clear-all") {{
+          controls.forEach((control) => setValue(control, control.defaultValue));
+          render();
+          emitParams("*");
+          return;
+        }}
+        const control = byName.get(target.dataset.param);
+        if (!control) return;
+        if (target.dataset.action === "clear") setValue(control, control.defaultValue);
+        if (target.dataset.action === "remove") toggleMultiValue(control, target.dataset.value);
+        if (target.dataset.action === "set") {{
+          const nextValue = control.isTernaryBoolean && (state[control.name] ?? "") === target.dataset.value
+            ? control.defaultValue
+            : target.dataset.value;
+          setValue(control, nextValue);
+        }}
+        render();
+        emitParams(control.name);
+      }});
+      render();
+    }})();
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html, headers=_NO_CACHE_HEADERS)
 
 
 @app.get("/muni/stats/outstanding")
@@ -974,6 +1446,32 @@ def muni_stats_issuance_chart(
     )
 
 
+@app.get("/muni/stats/issuance_aggrid_chart")
+def muni_stats_issuance_aggrid_chart(
+    start_date: str = Query(..., description="YYYY-MM-DD"),
+    end_date: str = Query(..., description="YYYY-MM-DD"),
+    metrics: Optional[str] = Query(None, description="Single metric key"),
+    period: str = Query("month"),
+    group_by: str = Query("none"),
+    filters: dict = Depends(_stats_filters_query),
+):
+    period = _validated_period(period)
+    group_by = _validated_group_by(group_by)
+    api_group_by = _group_by_for_api(group_by)
+    metric_key = _selected_metric_keys(metrics, ISSUANCE_METRIC_KEYS)[0]
+
+    body = _build_muni_stats_filters(**filters)
+    body.update({"start_date": start_date, "end_date": end_date, "period": period, "group_by": api_group_by})
+    rows = _post_muni_stats_rows("muni_stats_issuance", body)
+    return _stats_rows_for_aggrid_chart(
+        rows,
+        metric_key=metric_key,
+        metric_label=ISSUANCE_METRIC_LABELS[metric_key],
+        period=period,
+        group_by=group_by,
+    )
+
+
 @app.get("/muni/stats/trade_activity_chart")
 def muni_stats_trade_activity_chart(
     start_date: str = Query(..., description="YYYY-MM-DD"),
@@ -1003,6 +1501,32 @@ def muni_stats_trade_activity_chart(
         group_by=group_by,
         theme=theme,
         title=resolved_title,
+    )
+
+
+@app.get("/muni/stats/trade_activity_aggrid_chart")
+def muni_stats_trade_activity_aggrid_chart(
+    start_date: str = Query(..., description="YYYY-MM-DD"),
+    end_date: str = Query(..., description="YYYY-MM-DD"),
+    metrics: Optional[str] = Query(None, description="Single metric key"),
+    period: str = Query("month"),
+    group_by: str = Query("none"),
+    filters: dict = Depends(_stats_filters_query),
+):
+    period = _validated_period(period)
+    group_by = _validated_group_by(group_by)
+    api_group_by = _group_by_for_api(group_by)
+    metric_key = _selected_metric_keys(metrics, TRADE_ACTIVITY_METRIC_KEYS)[0]
+
+    body = _build_muni_stats_filters(**filters)
+    body.update({"start_date": start_date, "end_date": end_date, "period": period, "group_by": api_group_by})
+    rows = _post_muni_stats_rows("muni_stats_trade_activity", body)
+    return _stats_rows_for_aggrid_chart(
+        rows,
+        metric_key=metric_key,
+        metric_label=TRADE_ACTIVITY_METRIC_LABELS[metric_key],
+        period=period,
+        group_by=group_by,
     )
 
 
@@ -1047,6 +1571,28 @@ def _post_top_issuers_rows(body: dict) -> list[dict]:
     if not rows:
         raise HTTPException(status_code=404, detail="No top issuers found for the selected filters.")
     return rows
+
+
+@app.get("/muni/stats/top_issuers_aggrid_chart")
+def muni_stats_top_issuers_aggrid_chart(
+    start_date: str = Query(..., description="YYYY-MM-DD"),
+    end_date: str = Query(..., description="YYYY-MM-DD"),
+    rank_by: str = Query("trade_volume"),
+    limit: int = Query(25),
+    filters: dict = Depends(_stats_filters_query),
+):
+    rank_by = _validated_rank_by(rank_by)
+    body = _build_muni_stats_filters(**filters)
+    body.update({"start_date": start_date, "end_date": end_date, "rank_by": rank_by, "limit": limit})
+
+    rows = _post_top_issuers_rows(body)
+    return [
+        {
+            "issuer_name": r.get("issuer_name") or "—",
+            "value": float(r.get(rank_by) or 0),
+        }
+        for r in rows
+    ]
 
 
 @app.get("/muni/stats/top_issuers_chart")
