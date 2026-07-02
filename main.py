@@ -7,12 +7,14 @@ from typing import Optional
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from formatters import fmt, fmt_coupon, fmt_enum, fmt_par, cashflows_markdown, ref_markdown
 from widgets import ALL_STATES, WIDGETS, stats_filter_params
+
+
 
 load_dotenv()
 
@@ -34,6 +36,18 @@ app.add_middleware(
 )
 
 APPS_FILE = Path(__file__).parent / "apps.json"
+
+import logging
+
+logger = logging.getLogger("uvicorn")
+
+@app.on_event("startup")
+async def log_env_check():
+    if TERRAPIN_API_KEY:
+        masked = TERRAPIN_API_KEY[:4] + "..." + TERRAPIN_API_KEY[-4:] if len(TERRAPIN_API_KEY) > 8 else "****"
+        logger.info(f"TERRAPIN_API_KEY is set (masked: {masked}, length: {len(TERRAPIN_API_KEY)})")
+    else:
+        logger.warning("TERRAPIN_API_KEY is NOT set in environment")
 
 _NO_CACHE_HEADERS = {"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}
 
@@ -116,22 +130,42 @@ PERIOD_TITLE_LABELS = {
 
 
 # ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+def get_terrapin_api_key(
+    x_terrapin_api_key: Optional[str] = Header(None, alias="X-Terrapin-Api-Key"),
+) -> str:
+    """
+    Reads the Terrapin API key from the incoming request header.
+    Falls back to the server-side TERRAPIN_API_KEY env var if no header is provided.
+    """
+    key = x_terrapin_api_key or TERRAPIN_API_KEY
+    if not key:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing Terrapin API key. Provide it via the X-Terrapin-Api-Key header or set TERRAPIN_API_KEY.",
+        )
+    return key
+
+
+# ---------------------------------------------------------------------------
 # Terrapin API helpers
 # ---------------------------------------------------------------------------
 
-def terrapin_headers() -> dict:
+def terrapin_headers(api_key: str) -> dict:
     return {
-        "Authorization": f"Bearer {TERRAPIN_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
 
-def cusip_to_isin(cusip: str) -> str:
+def cusip_to_isin(cusip: str, api_key: str) -> str:
     cusip = cusip.strip().upper()
     with httpx.Client(timeout=15) as client:
         resp = client.post(
             f"{TERRAPIN_BASE_URL}/api/v1/convert_to_isin",
-            headers=terrapin_headers(),
+            headers=terrapin_headers(api_key),
             json={"identifiers": [cusip]},
         )
     if resp.status_code != 200:
@@ -243,12 +277,12 @@ def _stats_filters_query(
     }
 
 
-def _post_muni_stats_rows(endpoint: str, body: dict) -> list[dict]:
+def _post_muni_stats_rows(endpoint: str, body: dict, api_key: str) -> list[dict]:
     try:
         with httpx.Client(timeout=60) as client:
             resp = client.post(
                 f"{TERRAPIN_BASE_URL}/api/v1/{endpoint}",
-                headers=terrapin_headers(),
+                headers=terrapin_headers(api_key),
                 json=body,
             )
     except httpx.TimeoutException as exc:
@@ -544,13 +578,16 @@ def get_agents():
 # ---------------------------------------------------------------------------
 
 @app.get("/muni/reference")
-def muni_reference(cusip: str = Query(..., description="9-character CUSIP")):
-    isin = cusip_to_isin(cusip)
+def muni_reference(
+    cusip: str = Query(..., description="9-character CUSIP"),
+    api_key: str = Depends(get_terrapin_api_key),
+):
+    isin = cusip_to_isin(cusip, api_key)
 
     with httpx.Client(timeout=15) as client:
         resp = client.post(
             f"{TERRAPIN_BASE_URL}/api/v1/muni_reference",
-            headers=terrapin_headers(),
+            headers=terrapin_headers(api_key),
             json={"isins": [isin]},
         )
     if resp.status_code != 200:
@@ -574,6 +611,7 @@ def muni_pricing_chart(
     end_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
     raw: bool = Query(False),
     theme: str = Query("dark", description="OpenBB workspace theme (dark/light)"),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     today = date.today()
     if not end_date:
@@ -581,12 +619,12 @@ def muni_pricing_chart(
     if not start_date:
         start_date = (today - timedelta(days=365)).isoformat()
 
-    isin = cusip_to_isin(cusip)
+    isin = cusip_to_isin(cusip, api_key)
 
     with httpx.Client(timeout=20) as client:
         resp = client.post(
             f"{TERRAPIN_BASE_URL}/api/v1/muni_pricing_history",
-            headers=terrapin_headers(),
+            headers=terrapin_headers(api_key),
             json={"isin": isin, "start_date": start_date, "end_date": end_date},
         )
     if resp.status_code != 200:
@@ -662,15 +700,18 @@ def muni_pricing_chart(
 # ---------------------------------------------------------------------------
 
 @app.get("/muni/documents/options")
-def muni_documents_options(cusip: str = Query(..., description="9-character CUSIP")):
+def muni_documents_options(
+    cusip: str = Query(..., description="9-character CUSIP"),
+    api_key: str = Depends(get_terrapin_api_key),
+):
     """Returns [{label, value}] for the multi_file_viewer file selector."""
-    isin = cusip_to_isin(cusip)
+    isin = cusip_to_isin(cusip, api_key)
     rows = []
     with httpx.Client(timeout=15) as client:
         for doc_type in ("official_statement", "disclosure_document"):
             resp = client.post(
                 f"{TERRAPIN_BASE_URL}/api/v1/muni_documents",
-                headers=terrapin_headers(),
+                headers=terrapin_headers(api_key),
                 json={"isin": isin, "document_type": doc_type},
             )
             if resp.status_code == 200:
@@ -687,13 +728,16 @@ def muni_documents_options(cusip: str = Query(..., description="9-character CUSI
 # ---------------------------------------------------------------------------
 
 @app.get("/muni/cashflows")
-def muni_cashflows(cusip: str = Query(..., description="9-character CUSIP")):
-    isin = cusip_to_isin(cusip)
+def muni_cashflows(
+    cusip: str = Query(..., description="9-character CUSIP"),
+    api_key: str = Depends(get_terrapin_api_key),
+):
+    isin = cusip_to_isin(cusip, api_key)
 
     with httpx.Client(timeout=15) as client:
         cf_resp = client.post(
             f"{TERRAPIN_BASE_URL}/api/v1/muni_cashflows",
-            headers=terrapin_headers(),
+            headers=terrapin_headers(api_key),
             json={"isins": [isin]},
         )
 
@@ -727,6 +771,7 @@ def muni_search(
     include_callable: Optional[bool] = Query(None),
     last_traded_since: Optional[str] = Query(None),
     limit: int = Query(100),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     body: dict = {"limit": limit, "sort": ["-issue_date"]}
     if issuer_name:                                body["issuer_name"] = issuer_name
@@ -745,7 +790,7 @@ def muni_search(
     with httpx.Client(timeout=20) as client:
         resp = client.post(
             f"{TERRAPIN_BASE_URL}/api/v1/muni_search",
-            headers=terrapin_headers(),
+            headers=terrapin_headers(api_key),
             json=body,
         )
     if resp.status_code != 200:
@@ -1292,6 +1337,7 @@ def muni_stats_outstanding(
     filters: dict = Depends(_stats_filters_query),
     theme: str = Query("dark", description="OpenBB workspace theme (dark/light)"),
     title: Optional[str] = Query(None, description="Optional chart title annotation"),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     output = _validated_output_mode(output)
     group_by = _validated_group_by(group_by)
@@ -1300,7 +1346,7 @@ def muni_stats_outstanding(
     body = _build_muni_stats_filters(**filters)
     body["group_by"] = api_group_by
 
-    rows = _post_muni_stats_rows("muni_stats_outstanding", body)
+    rows = _post_muni_stats_rows("muni_stats_outstanding", body, api_key)
     raw_rows = [
         {
             **({"group_key": r.get("group_key")} if group_by != "none" and r.get("group_key") is not None else {}),
@@ -1331,6 +1377,7 @@ def muni_stats_issuance(
     filters: dict = Depends(_stats_filters_query),
     theme: str = Query("dark", description="OpenBB workspace theme (dark/light)"),
     title: Optional[str] = Query(None, description="Optional chart title annotation"),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     output = _validated_output_mode(output)
     period = _validated_period(period)
@@ -1343,7 +1390,7 @@ def muni_stats_issuance(
     body["period"] = period
     body["group_by"] = api_group_by
 
-    rows = _post_muni_stats_rows("muni_stats_issuance", body)
+    rows = _post_muni_stats_rows("muni_stats_issuance", body, api_key)
     raw_rows = [
         {
             **({"period": r.get("period")} if period != "all" and r.get("period") is not None else {}),
@@ -1378,6 +1425,7 @@ def muni_stats_trade_activity(
     filters: dict = Depends(_stats_filters_query),
     theme: str = Query("dark", description="OpenBB workspace theme (dark/light)"),
     title: Optional[str] = Query(None, description="Optional chart title annotation"),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     output = _validated_output_mode(output)
     period = _validated_period(period)
@@ -1390,7 +1438,7 @@ def muni_stats_trade_activity(
     body["period"] = period
     body["group_by"] = api_group_by
 
-    rows = _post_muni_stats_rows("muni_stats_trade_activity", body)
+    rows = _post_muni_stats_rows("muni_stats_trade_activity", body, api_key)
     raw_rows = [
         {
             **({"period": r.get("period")} if period != "all" and r.get("period") is not None else {}),
@@ -1424,6 +1472,7 @@ def muni_stats_issuance_chart(
     filters: dict = Depends(_stats_filters_query),
     title: Optional[str] = Query(None, description="Optional chart title annotation"),
     theme: str = Query("dark", description="OpenBB workspace theme (dark/light)"),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     period = _validated_period(period)
     group_by = _validated_group_by(group_by)
@@ -1432,7 +1481,7 @@ def muni_stats_issuance_chart(
 
     body = _build_muni_stats_filters(**filters)
     body.update({"start_date": start_date, "end_date": end_date, "period": period, "group_by": api_group_by})
-    rows = _post_muni_stats_rows("muni_stats_issuance", body)
+    rows = _post_muni_stats_rows("muni_stats_issuance", body, api_key)
     dynamic_title = _metric_period_title(ISSUANCE_METRIC_LABELS[metric_key], period)
     resolved_title = title.strip() if title and title.strip() else dynamic_title
     return _stacked_bar_chart(
@@ -1454,6 +1503,7 @@ def muni_stats_issuance_aggrid_chart(
     period: str = Query("month"),
     group_by: str = Query("none"),
     filters: dict = Depends(_stats_filters_query),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     period = _validated_period(period)
     group_by = _validated_group_by(group_by)
@@ -1462,7 +1512,7 @@ def muni_stats_issuance_aggrid_chart(
 
     body = _build_muni_stats_filters(**filters)
     body.update({"start_date": start_date, "end_date": end_date, "period": period, "group_by": api_group_by})
-    rows = _post_muni_stats_rows("muni_stats_issuance", body)
+    rows = _post_muni_stats_rows("muni_stats_issuance", body, api_key)
     return _stats_rows_for_aggrid_chart(
         rows,
         metric_key=metric_key,
@@ -1482,6 +1532,7 @@ def muni_stats_trade_activity_chart(
     filters: dict = Depends(_stats_filters_query),
     title: Optional[str] = Query(None, description="Optional chart title annotation"),
     theme: str = Query("dark", description="OpenBB workspace theme (dark/light)"),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     period = _validated_period(period)
     group_by = _validated_group_by(group_by)
@@ -1490,7 +1541,7 @@ def muni_stats_trade_activity_chart(
 
     body = _build_muni_stats_filters(**filters)
     body.update({"start_date": start_date, "end_date": end_date, "period": period, "group_by": api_group_by})
-    rows = _post_muni_stats_rows("muni_stats_trade_activity", body)
+    rows = _post_muni_stats_rows("muni_stats_trade_activity", body, api_key)
     dynamic_title = _metric_period_title(TRADE_ACTIVITY_METRIC_LABELS[metric_key], period)
     resolved_title = title.strip() if title and title.strip() else dynamic_title
     return _stacked_bar_chart(
@@ -1512,6 +1563,7 @@ def muni_stats_trade_activity_aggrid_chart(
     period: str = Query("month"),
     group_by: str = Query("none"),
     filters: dict = Depends(_stats_filters_query),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     period = _validated_period(period)
     group_by = _validated_group_by(group_by)
@@ -1520,7 +1572,7 @@ def muni_stats_trade_activity_aggrid_chart(
 
     body = _build_muni_stats_filters(**filters)
     body.update({"start_date": start_date, "end_date": end_date, "period": period, "group_by": api_group_by})
-    rows = _post_muni_stats_rows("muni_stats_trade_activity", body)
+    rows = _post_muni_stats_rows("muni_stats_trade_activity", body, api_key)
     return _stats_rows_for_aggrid_chart(
         rows,
         metric_key=metric_key,
@@ -1537,12 +1589,13 @@ def muni_stats_top_issuers(
     rank_by: str = Query("trade_volume"),
     limit: int = Query(25),
     filters: dict = Depends(_stats_filters_query),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     rank_by = _validated_rank_by(rank_by)
     body = _build_muni_stats_filters(**filters)
     body.update({"start_date": start_date, "end_date": end_date, "rank_by": rank_by, "limit": limit})
 
-    rows = _post_top_issuers_rows(body)
+    rows = _post_top_issuers_rows(body, api_key)
     return [
         {
             "rank":                   i + 1,
@@ -1558,11 +1611,11 @@ def muni_stats_top_issuers(
     ]
 
 
-def _post_top_issuers_rows(body: dict) -> list[dict]:
+def _post_top_issuers_rows(body: dict, api_key: str) -> list[dict]:
     with httpx.Client(timeout=30) as client:
         resp = client.post(
             f"{TERRAPIN_BASE_URL}/api/v1/muni_stats_top_issuers",
-            headers=terrapin_headers(),
+            headers=terrapin_headers(api_key),
             json=body
         )
     if resp.status_code != 200:
@@ -1580,12 +1633,13 @@ def muni_stats_top_issuers_aggrid_chart(
     rank_by: str = Query("trade_volume"),
     limit: int = Query(25),
     filters: dict = Depends(_stats_filters_query),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     rank_by = _validated_rank_by(rank_by)
     body = _build_muni_stats_filters(**filters)
     body.update({"start_date": start_date, "end_date": end_date, "rank_by": rank_by, "limit": limit})
 
-    rows = _post_top_issuers_rows(body)
+    rows = _post_top_issuers_rows(body, api_key)
     return [
         {
             "issuer_name": r.get("issuer_name") or "—",
@@ -1604,12 +1658,13 @@ def muni_stats_top_issuers_chart(
     filters: dict = Depends(_stats_filters_query),
     title: Optional[str] = Query(None, description="Optional chart title annotation"),
     theme: str = Query("dark", description="OpenBB workspace theme (dark/light)"),
+    api_key: str = Depends(get_terrapin_api_key),
 ):
     rank_by = _validated_rank_by(rank_by)
     body = _build_muni_stats_filters(**filters)
     body.update({"start_date": start_date, "end_date": end_date, "rank_by": rank_by, "limit": limit})
 
-    rows = _post_top_issuers_rows(body)
+    rows = _post_top_issuers_rows(body, api_key)
     x_axis = [r.get("issuer_name") or "—" for r in rows]
     y_axis = [float(r.get(rank_by) or 0) for r in rows]
 
@@ -1678,7 +1733,10 @@ def muni_stats_top_issuers_chart(
 # ---------------------------------------------------------------------------
 
 @app.post("/muni/document/view")
-def muni_document_view(file_id: list = Body(..., embed=True)):
+def muni_document_view(
+    file_id: list = Body(..., embed=True),
+    api_key: str = Depends(get_terrapin_api_key),
+):
     """POST endpoint for the multi_file_viewer widget.
     Accepts {"file_id": ["..."]} and returns a list of base64-encoded PDFs.
     """
@@ -1689,7 +1747,7 @@ def muni_document_view(file_id: list = Body(..., embed=True)):
             try:
                 resp = client.post(
                     f"{TERRAPIN_BASE_URL}/api/v1/download_document",
-                    headers=terrapin_headers(),
+                    headers=terrapin_headers(api_key),
                     json={"file_id": fid},
                 )
                 resp.raise_for_status()
