@@ -1,8 +1,8 @@
 {
   "name": "Muni Bond Lookup",
-  "img": "https://media.licdn.com/dms/image/v2/C4E0BAQFAmb9f88zeVw/company-logo_200_200/company-logo_200_200/0/1673948603457/terrapin_finance_logo?e=1781740800&v=beta&t=z-44gafawWq2zMwk7YmKRHv3lJVngntGXRbe46lCs9Y",
-  "img_dark": "https://media.licdn.com/dms/image/v2/C4E0BAQFAmb9f88zeVw/company-logo_200_200/company-logo_200_200/0/1673948603457/terrapin_finance_logo?e=1781740800&v=beta&t=z-44gafawWq2zMwk7YmKRHv3lJVngntGXRbe46lCs9Y",
-  "img_light": "https://media.licdn.com/dms/image/v2/C4E0BAQFAmb9f88zeVw/company-logo_200_200/company-logo_200_200/0/1673948603457/terrapin_finance_logo?e=1781740800&v=beta&t=z-44gafawWq2zMwk7YmKRHv3lJVngntGXRbe46lCs9Y",
+  "img": "https://raw.githubusercontent.com/Terrapin-Code/openbb-app/refs/heads/main/cover.png",
+  "img_dark": "https://raw.githubusercontent.com/Terrapin-Code/openbb-app/refs/heads/main/cover.png",
+  "img_light": "https://raw.githubusercontent.com/Terrapin-Code/openbb-app/refs/heads/main/cover.png",
   "description": "Explore US municipal bonds: reference data, pricing history, documents, cashflows, bond search, and market statistics.",
   "allowCustomization": true,
   "prompts": [],
