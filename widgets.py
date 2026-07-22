@@ -16,6 +16,15 @@ def last_complete_month_end(today: date | None = None) -> str:
     return (today.replace(day=1) - timedelta(days=1)).isoformat()
 
 
+def one_year_ago(today: date | None = None) -> str:
+    today = today or date.today()
+    return (today - timedelta(days=365)).isoformat()
+
+
+def today_iso(today: date | None = None) -> str:
+    return (today or date.today()).isoformat()
+
+
 def stats_default_start_date(today: date | None = None) -> str:
     """First day of the month 12 complete months before last_complete_month_end."""
     end = date.fromisoformat(last_complete_month_end(today))
@@ -854,10 +863,10 @@ WIDGETS: dict[str, dict[str, Any]] = {
         "params": [
             cusip_param(),
             *date_range_params(
-                start="",
-                end="",
-                start_description="Leave empty to default to 1 year ago (computed server-side)",
-                end_description="Leave empty to default to today (computed server-side)",
+                start=one_year_ago(),
+                end=today_iso(),
+                start_description="Defaults to 1 year ago",
+                end_description="Defaults to today",
             ),
         ],
     },
@@ -901,15 +910,8 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     "maturity_date_min",
                     type="date",
                     label="Maturity From",
-                    description="Minimum maturity date (defaults to today so results are still-outstanding bonds)",
-                    value="$currentDate",
-                ),
-                _param(
-                    "maturity_date_max",
-                    type="date",
-                    label="Maturity To",
-                    description="Maximum maturity date (optional)",
-                    value="",
+                    description="Minimum maturity date (defaults to today)",
+                    value=today_iso(),
                 ),
                 _param("last_traded_since", type="date", label="Last Traded Since", description="Only include bonds traded since this date", value=""),
                 _param("limit", label="Result Limit", description="Maximum number of results (default 100)", value="100"),
