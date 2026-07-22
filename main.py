@@ -4,6 +4,8 @@ from datetime import date, timedelta
 from html import escape
 from pathlib import Path
 from typing import Optional
+import base64
+
 
 import httpx
 from dotenv import load_dotenv
@@ -702,7 +704,6 @@ def muni_pricing_chart(
     bg_color = "#151518" if is_dark else "#FFFFFF"
     grid_color = "#2A2A2A" if is_dark else "#E5E7EB"
     text_color = "#CCCCCC" if is_dark else "#1F2937"
-    title_color = "#FFFFFF" if is_dark else "#000000"
 
     return {
         "data": traces,
@@ -750,22 +751,21 @@ def muni_documents_options(
             )
             upstream_errors.append(f"{doc_type}: HTTP {resp.status_code}")
 
-    if not rows and upstream_errors:
+    options = [
+        {"label": d.get("document_name") or d["file_id"], "value": d["file_id"]}
+        for d in rows
+        if d.get("file_id")
+    ]
+
+    if not options and upstream_errors:
         raise HTTPException(
             status_code=502,
             detail=f"Failed to fetch documents for {cusip} ({'; '.join(upstream_errors)}).",
         )
-    if not rows:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No documents found for {cusip}.",
-        )
+    if not options:
+        raise HTTPException(status_code=404, detail=f"No documents found for {cusip}.")
 
-    rows.sort(key=lambda d: d.get("publish_date") or "", reverse=True)
-    return [
-        {"label": d["document_name"], "value": d["file_id"], "_date": d.get("publish_date") or ""}
-        for d in rows if d.get("file_id")
-    ]
+    return options
 
 
 # ---------------------------------------------------------------------------
@@ -813,7 +813,13 @@ def muni_search(
     limit: int = Query(100),
     api_key: str = Depends(get_terrapin_api_key),
 ):
-    body: dict = {"limit": limit, "sort": ["-issue_date"]}
+    body: dict = {
+        "limit": limit,
+        "sort": ["-issue_date"],
+        # Terrapin defaults to OS-only; set explicitly so Bond Explorer never
+        # returns bonds without a final official statement.
+        "include_bonds_without_os": False,
+    }
     if issuer_name:                                body["issuer_name"] = issuer_name
     if sl := [s for s in _csv(states) if s.upper() != ALL_STATES]: body["states"] = sl
     if sc := _csv(sectors):                         body["sectors"] = sc
@@ -842,6 +848,7 @@ def muni_search(
             "maturity_date":   b.get("maturity_date") or "—",
             "callable":        "Yes" if b.get("is_callable") else "No",
             "rating":          fmt_enum(b.get("rating_group")),
+            "has_os":          "Yes" if b.get("has_official_statement") else "No",
         }
         for b in resp.json().get("data", [])
     ]
@@ -1769,31 +1776,47 @@ def muni_stats_top_issuers_chart(
 
 @app.post("/muni/document/view")
 def muni_document_view(
-    file_id: list = Body(..., embed=True),
+    file_id: list = Body(default=[], embed=True),
     api_key: str = Depends(get_terrapin_api_key),
 ):
     """POST endpoint for the multi_file_viewer widget.
     Accepts {"file_id": ["..."]} and returns a list of base64-encoded PDFs.
     """
     import base64
+
+    if not file_id:
+        return JSONResponse(
+            content=[{"error_type": "not_found", "content": "Select a document to view."}]
+        )
+
     results = []
-    with httpx.Client(timeout=60) as client:
-        for fid in file_id:
-            try:
-                resp = client.post(
-                    f"{TERRAPIN_BASE_URL}/api/v1/download_document",
-                    headers=terrapin_headers(api_key),
-                    json={"file_id": fid},
+    for fid in file_id:
+        try:
+            resp = terrapin_post(
+                "/api/v1/download_document",
+                api_key,
+                {"file_id": fid},
+                timeout=60,
+            )
+            if resp.status_code != 200:
+                results.append(
+                    {
+                        "error_type": "not_found",
+                        "content": f"Failed to download {fid}: HTTP {resp.status_code}",
+                    }
                 )
-                resp.raise_for_status()
-                encoded = base64.b64encode(resp.content).decode("utf-8")
-                results.append({
-                    "content": encoded,
+                continue
+            results.append(
+                {
+                    "content": base64.b64encode(resp.content).decode("utf-8"),
                     "data_format": {"data_type": "pdf", "filename": fid},
-                })
-            except Exception as exc:
-                results.append({
+                }
+            )
+        except Exception as exc:
+            results.append(
+                {
                     "error_type": "download_error",
                     "content": f"Failed to download {fid}: {exc}",
-                })
+                }
+            )
     return JSONResponse(content=results)

@@ -105,12 +105,6 @@ def build_apps() -> dict[str, Any]:
                         "y": 22,
                         "w": 16,
                         "h": 15,
-                        "state": {
-                            "params": {
-                                "start_date": "$currentDate-1y",
-                                "end_date": "$currentDate",
-                            }
-                        },
                         "groups": ["Group 1"],
                     },
                     {
