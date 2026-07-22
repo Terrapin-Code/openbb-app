@@ -3,10 +3,28 @@
 from __future__ import annotations
 
 import copy
+from datetime import date, timedelta
 from typing import Any
 
 DEFAULT_CUSIP = "74445MAB5"
 ALL_STATES = "ALL"
+
+
+def last_complete_month_end(today: date | None = None) -> str:
+    """Last day of the most recently completed calendar month (e.g. Jun 30 if today is in July)."""
+    today = today or date.today()
+    return (today.replace(day=1) - timedelta(days=1)).isoformat()
+
+
+def stats_default_start_date(today: date | None = None) -> str:
+    """First day of the month 12 complete months before last_complete_month_end."""
+    end = date.fromisoformat(last_complete_month_end(today))
+    year, month = end.year, end.month - 11
+    while month <= 0:
+        month += 12
+        year -= 1
+    return date(year, month, 1).isoformat()
+
 
 # ---------------------------------------------------------------------------
 # Shared option catalogs
@@ -502,6 +520,15 @@ def date_range_params(
     ]
 
 
+def stats_date_range_params() -> list[dict[str, Any]]:
+    return date_range_params(
+        start=stats_default_start_date(),
+        end=last_complete_month_end(),
+        start_description="Defaults to 12 complete months before the end date",
+        end_description="Defaults to the last day of the most recently completed month",
+    )
+
+
 def stats_non_boolean_filter_params(*, states: str = ALL_STATES) -> list[dict[str, Any]]:
     return [
         states_param(value=states),
@@ -868,8 +895,20 @@ WIDGETS: dict[str, dict[str, Any]] = {
             [
                 _param("coupon_min", label="Coupon Min (%)", description="Minimum coupon rate"),
                 _param("coupon_max", label="Coupon Max (%)", description="Maximum coupon rate"),
-                _param("maturity_date_min", type="date", label="Maturity From", description="Minimum maturity date", value=""),
-                _param("maturity_date_max", type="date", label="Maturity To", description="Maximum maturity date", value=""),
+                _param(
+                    "maturity_date_min",
+                    type="date",
+                    label="Maturity From",
+                    description="Minimum maturity date (defaults to today so results are future-maturity bonds)",
+                    value="$currentDate",
+                ),
+                _param(
+                    "maturity_date_max",
+                    type="date",
+                    label="Maturity To",
+                    description="Maximum maturity date (leave empty for no upper bound)",
+                    value="",
+                ),
                 _param("last_traded_since", type="date", label="Last Traded Since", description="Only include bonds traded since this date", value=""),
                 _param("limit", label="Result Limit", description="Maximum number of results (default 100)", value="100"),
             ],
@@ -947,7 +986,7 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     value="new_issuance_par_value",
                 ),
                 stats_period_param(value="month"),
-                *date_range_params(start="2025-01-01"),
+                *stats_date_range_params(),
             ],
         ],
         "data": aggrid_stacked_stats_chart_data(),
@@ -969,7 +1008,7 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     value="trade_volume",
                 ),
                 stats_period_param(value="month"),
-                *date_range_params(start="2025-01-01"),
+                *stats_date_range_params(),
             ],
         ],
     },
@@ -1019,7 +1058,7 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     value="trade_volume",
                 ),
                 stats_period_param(value="month"),
-                *date_range_params(start="2025-01-01"),
+                *stats_date_range_params(),
             ],
         ],
         "data": aggrid_stacked_stats_chart_data(),
@@ -1041,7 +1080,7 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     value="customer_bought_count",
                 ),
                 stats_period_param(value="month"),
-                *date_range_params(start="2025-01-01"),
+                *stats_date_range_params(),
             ],
         ],
     },
@@ -1062,7 +1101,7 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     value="new_issuance_par_value",
                 ),
                 stats_period_param(value="month"),
-                *date_range_params(start="2025-01-01"),
+                *stats_date_range_params(),
             ],
         ],
     },
@@ -1083,7 +1122,7 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     value="new_issuance_par_value",
                 ),
                 stats_period_param(value="month"),
-                *date_range_params(start="2025-01-01"),
+                *stats_date_range_params(),
             ],
         ],
     },
@@ -1106,7 +1145,7 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     options=_options(RANK_BY_OPTIONS),
                 ),
                 _param("limit", label="Limit", description="Maximum number of issuers", value="25"),
-                *date_range_params(start="2025-01-01"),
+                *stats_date_range_params(),
             ],
         ],
         "data": {
@@ -1143,7 +1182,7 @@ WIDGETS: dict[str, dict[str, Any]] = {
                     options=_options(RANK_BY_OPTIONS),
                 ),
                 _param("limit", label="Limit", description="Maximum number of issuers", value="25"),
-                *date_range_params(start="2025-01-01"),
+                *stats_date_range_params(),
             ],
         ],
         "data": aggrid_top_issuers_chart_data(),
