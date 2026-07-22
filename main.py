@@ -160,14 +160,40 @@ def terrapin_headers(api_key: str) -> dict:
     }
 
 
+# Reusable client — avoids opening a new TCP connection on every Terrapin call.
+_http = httpx.Client(timeout=30)
+
+
+def terrapin_post(
+    path: str,
+    api_key: str,
+    payload: dict,
+    *,
+    timeout: float = 15,
+) -> httpx.Response:
+    """POST to Terrapin; turn network failures into clear HTTP errors."""
+    try:
+        return _http.post(
+            f"{TERRAPIN_BASE_URL}{path}",
+            headers=terrapin_headers(api_key),
+            json=payload,
+            timeout=timeout,
+        )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Terrapin request timed out for {path}",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Terrapin request failed for {path}: {exc}",
+        ) from exc
+
+
 def cusip_to_isin(cusip: str, api_key: str) -> str:
     cusip = cusip.strip().upper()
-    with httpx.Client(timeout=15) as client:
-        resp = client.post(
-            f"{TERRAPIN_BASE_URL}/api/v1/convert_to_isin",
-            headers=terrapin_headers(api_key),
-            json={"identifiers": [cusip]},
-        )
+    resp = terrapin_post("/api/v1/convert_to_isin", api_key, {"identifiers": [cusip]})
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     isin = resp.json()["data"][0]["isin"]
@@ -584,12 +610,7 @@ def muni_reference(
 ):
     isin = cusip_to_isin(cusip, api_key)
 
-    with httpx.Client(timeout=15) as client:
-        resp = client.post(
-            f"{TERRAPIN_BASE_URL}/api/v1/muni_reference",
-            headers=terrapin_headers(api_key),
-            json={"isins": [isin]},
-        )
+    resp = terrapin_post("/api/v1/muni_reference", api_key, {"isins": [isin]})
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
@@ -621,13 +642,14 @@ def muni_pricing_chart(
 
     isin = cusip_to_isin(cusip, api_key)
 
-    with httpx.Client(timeout=20) as client:
-        resp = client.post(
-            f"{TERRAPIN_BASE_URL}/api/v1/muni_pricing_history",
-            headers=terrapin_headers(api_key),
-            json={"isin": isin, "start_date": start_date, "end_date": end_date},
-        )
+    resp = terrapin_post(
+        "/api/v1/muni_pricing_history",
+        api_key,
+        {"isin": isin, "start_date": start_date, "end_date": end_date},
+        timeout=20,
+    )
     if resp.status_code != 200:
+        logger.warning("muni_pricing_history failed (%s): %s", resp.status_code, resp.text[:200])
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
     trades = resp.json().get("data", [])
@@ -636,7 +658,10 @@ def muni_pricing_chart(
         return trades
 
     if not trades:
-        return {"data": [], "layout": {}}
+        raise HTTPException(
+            status_code=404,
+            detail=f"No pricing history found for {cusip} between {start_date} and {end_date}.",
+        )
 
     trades = sorted(trades, key=lambda t: t["trade_datetime"])
 
@@ -707,15 +732,37 @@ def muni_documents_options(
     """Returns [{label, value}] for the multi_file_viewer file selector."""
     isin = cusip_to_isin(cusip, api_key)
     rows = []
-    with httpx.Client(timeout=15) as client:
-        for doc_type in ("official_statement", "disclosure_document"):
-            resp = client.post(
-                f"{TERRAPIN_BASE_URL}/api/v1/muni_documents",
-                headers=terrapin_headers(api_key),
-                json={"isin": isin, "document_type": doc_type},
+    upstream_errors: list[str] = []
+
+    for doc_type in ("official_statement", "disclosure_document"):
+        resp = terrapin_post(
+            "/api/v1/muni_documents",
+            api_key,
+            {"isin": isin, "document_type": doc_type},
+        )
+        if resp.status_code == 200:
+            rows.extend(resp.json().get("data", []))
+        else:
+            logger.warning(
+                "muni_documents(%s) failed for %s (%s): %s",
+                doc_type,
+                cusip,
+                resp.status_code,
+                resp.text[:200],
             )
-            if resp.status_code == 200:
-                rows.extend(resp.json().get("data", []))
+            upstream_errors.append(f"{doc_type}: HTTP {resp.status_code}")
+
+    if not rows and upstream_errors:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch documents for {cusip} ({'; '.join(upstream_errors)}).",
+        )
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No documents found for {cusip}.",
+        )
+
     rows.sort(key=lambda d: d.get("publish_date") or "", reverse=True)
     return [
         {"label": d["document_name"], "value": d["file_id"], "_date": d.get("publish_date") or ""}
@@ -734,19 +781,14 @@ def muni_cashflows(
 ):
     isin = cusip_to_isin(cusip, api_key)
 
-    with httpx.Client(timeout=15) as client:
-        cf_resp = client.post(
-            f"{TERRAPIN_BASE_URL}/api/v1/muni_cashflows",
-            headers=terrapin_headers(api_key),
-            json={"isins": [isin]},
-        )
+    cf_resp = terrapin_post("/api/v1/muni_cashflows", api_key, {"isins": [isin]})
 
     if cf_resp.status_code != 200:
         raise HTTPException(status_code=cf_resp.status_code, detail=cf_resp.text)
 
     cf_data = cf_resp.json().get("data", [])
     if not cf_data:
-        return PlainTextResponse("No cashflow data available.")
+        raise HTTPException(status_code=404, detail=f"No cashflow data available for {cusip}.")
 
     cashflows = sorted(cf_data[0]["cashflows"], key=lambda c: (c["date"], c["type"]))
     return PlainTextResponse(cashflows_markdown(cashflows))
@@ -787,12 +829,7 @@ def muni_search(
     if include_callable is not None:               body["include_callable"] = include_callable
     if last_traded_since:                          body["last_traded_since"] = last_traded_since
 
-    with httpx.Client(timeout=20) as client:
-        resp = client.post(
-            f"{TERRAPIN_BASE_URL}/api/v1/muni_search",
-            headers=terrapin_headers(api_key),
-            json=body,
-        )
+    resp = terrapin_post("/api/v1/muni_search", api_key, body, timeout=20)
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
 

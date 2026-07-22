@@ -868,9 +868,9 @@ WIDGETS: dict[str, dict[str, Any]] = {
             [
                 _param("coupon_min", label="Coupon Min (%)", description="Minimum coupon rate"),
                 _param("coupon_max", label="Coupon Max (%)", description="Maximum coupon rate"),
-                _param("maturity_date_min", type="date", label="Maturity From", description="Minimum maturity date"),
-                _param("maturity_date_max", type="date", label="Maturity To", description="Maximum maturity date", value=None),
-                _param("last_traded_since", type="date", label="Last Traded Since", description="Only include bonds traded since this date", value=None),
+                _param("maturity_date_min", type="date", label="Maturity From", description="Minimum maturity date", value=""),
+                _param("maturity_date_max", type="date", label="Maturity To", description="Maximum maturity date", value=""),
+                _param("last_traded_since", type="date", label="Last Traded Since", description="Only include bonds traded since this date", value=""),
                 _param("limit", label="Result Limit", description="Maximum number of results (default 100)", value="100"),
             ],
         ],
