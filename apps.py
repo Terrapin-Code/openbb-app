@@ -8,7 +8,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from widgets import DEFAULT_CUSIP, last_complete_month_end, stats_default_start_date
+from widgets import (
+    DEFAULT_CUSIP,
+    last_complete_month_end,
+    one_year_ago,
+    stats_default_start_date,
+    today_iso,
+)
 
 COVER = "https://raw.githubusercontent.com/Terrapin-Code/openbb-app/refs/heads/main/cover.png"
 
@@ -66,7 +72,7 @@ def build_apps() -> dict[str, Any]:
                         "h": 20,
                         "state": {
                             "params": {
-                                "maturity_date_min": "$currentDate",
+                                "maturity_date_min": today_iso(),
                             },
                             "chartView": {
                                 "enabled": False,
@@ -105,6 +111,12 @@ def build_apps() -> dict[str, Any]:
                         "y": 22,
                         "w": 16,
                         "h": 15,
+                        "state": {
+                            "params": {
+                                "start_date": one_year_ago(),
+                                "end_date": today_iso(),
+                            }
+                        },
                         "groups": ["Group 1"],
                     },
                     {

@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 from datetime import date, timedelta
@@ -586,7 +587,25 @@ def _stats_rows_for_aggrid_chart(
 
 @app.get("/widgets.json")
 def get_widgets():
-    return JSONResponse(content=WIDGETS, headers=_NO_CACHE_HEADERS)
+    content = copy.deepcopy(WIDGETS)
+    today = date.today()
+    year_ago = (today - timedelta(days=365)).isoformat()
+    today_s = today.isoformat()
+
+    for row in content["muni_bond_search"]["params"]:
+        for param in row if isinstance(row, list) else [row]:
+            if param.get("paramName") == "maturity_date_min":
+                param["value"] = today_s
+
+    for param in content["muni_pricing_chart"]["params"]:
+        if not isinstance(param, dict):
+            continue
+        if param.get("paramName") == "start_date":
+            param["value"] = year_ago
+        elif param.get("paramName") == "end_date":
+            param["value"] = today_s
+
+    return JSONResponse(content=content, headers=_NO_CACHE_HEADERS)
 
 
 @app.get("/apps.json")
@@ -804,7 +823,6 @@ def muni_search(
     coupon_min: Optional[float] = Query(None),
     coupon_max: Optional[float] = Query(None),
     maturity_date_min: Optional[str] = Query(None),
-    maturity_date_max: Optional[str] = Query(None),
     interest_types: Optional[str] = Query(None),
     sources_of_repayment: Optional[str] = Query(None),
     is_insured: Optional[bool] = Query(None),
@@ -826,7 +844,6 @@ def muni_search(
     if coupon_min is not None:                     body["coupon_min"] = coupon_min
     if coupon_max is not None:                     body["coupon_max"] = coupon_max
     if maturity_date_min:                          body["maturity_date_min"] = maturity_date_min
-    if maturity_date_max:                          body["maturity_date_max"] = maturity_date_max
     if it := _csv(interest_types):                  body["interest_types"] = it
     if sr := _csv(sources_of_repayment):            body["sources_of_repayment"] = sr
     if is_insured is not None:                     body["is_insured"] = is_insured
