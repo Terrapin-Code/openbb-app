@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from formatters import fmt, fmt_coupon, fmt_enum, fmt_par, cashflows_markdown, ref_markdown
 from widgets import ALL_STATES, WIDGETS, stats_filter_params
+from apps import build_apps
 
 
 
@@ -34,8 +35,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-APPS_FILE = Path(__file__).parent / "apps.json"
 
 import logging
 
@@ -590,8 +589,7 @@ def get_widgets():
 
 @app.get("/apps.json")
 def get_apps():
-    with open(APPS_FILE, encoding="utf-8") as f:
-        return JSONResponse(content=json.load(f), headers=_NO_CACHE_HEADERS)
+    return JSONResponse(content=build_apps(), headers=_NO_CACHE_HEADERS)
 
 
 @app.get("/agents.json")
