@@ -15,7 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from formatters import fmt, fmt_coupon, fmt_enum, fmt_par, cashflows_markdown, ref_markdown
-from widgets import ALL_STATES, WIDGETS, stats_filter_params
+from market_activity_filters_page import render_market_activity_filters_page
+from widgets import ALL_SECTORS, ALL_STATES, WIDGETS, stats_filter_params
 from apps import build_apps
 
 
@@ -232,7 +233,7 @@ def _build_muni_stats_filters(
         body["states"] = sl
     if sr := _csv(sources_of_repayment):
         body["sources_of_repayment"] = sr
-    if sc := _csv(sectors):
+    if sc := [s for s in _csv(sectors) if s.upper() != ALL_SECTORS]:
         body["use_sectors"] = sc
     if it := _csv(interest_types):
         body["interest_types"] = it
@@ -840,7 +841,7 @@ def muni_search(
     }
     if issuer_name:                                body["issuer_name"] = issuer_name
     if sl := [s for s in _csv(states) if s.upper() != ALL_STATES]: body["states"] = sl
-    if sc := _csv(sectors):                         body["sectors"] = sc
+    if sc := [s for s in _csv(sectors) if s.upper() != ALL_SECTORS]: body["sectors"] = sc
     if coupon_min is not None:                     body["coupon_min"] = coupon_min
     if coupon_max is not None:                     body["coupon_max"] = coupon_max
     if maturity_date_min:                          body["maturity_date_min"] = maturity_date_min
@@ -903,6 +904,8 @@ def muni_stats_filters_summary(
     def _normalise_value(param_name: str, value: object) -> str:
         if param_name == "states":
             return str(value or ALL_STATES)
+        if param_name == "sectors":
+            return str(value or ALL_SECTORS)
         if isinstance(value, bool):
             return "true" if value else "false"
         if value is None:
@@ -910,7 +913,11 @@ def muni_stats_filters_summary(
         return str(value)
 
     def _default_value(param_name: str) -> str:
-        return ALL_STATES if param_name == "states" else ""
+        if param_name == "states":
+            return ALL_STATES
+        if param_name == "sectors":
+            return ALL_SECTORS
+        return ""
 
     def _control(param_name: str) -> dict:
         param = param_defs[param_name]
@@ -962,429 +969,11 @@ def muni_stats_filters_summary(
     initial_state_json = json.dumps(initial_state)
     resolved_theme = "light" if theme.strip().lower() == "light" else "dark"
 
-    html = f"""<!doctype html>
-<html lang="en" data-theme="{resolved_theme}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-:root {{
-  color-scheme: dark light;
-  --bg: #131417;
-  --surface: #1c1e23;
-  --surface-soft: #252932;
-  --border: rgba(255,255,255,.12);
-  --text: #f5f5f5;
-  --muted: #a9adb8;
-  --accent: #4da3ff;
-  --accent-soft: rgba(77,163,255,.16);
-  --danger: #ff6f61;
-}}
-:root[data-theme="light"] {{
-  --bg: #ffffff;
-  --surface: #f5f7fa;
-  --surface-soft: #eef2f7;
-  --border: rgba(24,31,42,.14);
-  --text: #1f2937;
-  --muted: #596273;
-  --accent: #0b66c3;
-  --accent-soft: rgba(11,102,195,.12);
-  --danger: #b42318;
-}}
-* {{ box-sizing: border-box; }}
-body {{
-  margin: 0;
-  padding: 8px 10px 10px;
-  background: var(--bg);
-  color: var(--text);
-  font: 12px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  overflow: auto;
-}}
-.header {{
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-}}
-.count {{
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 650;
-  white-space: nowrap;
-}}
-.grid {{
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-}}
-.filter-section {{
-  min-width: 0;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  border-radius: 7px;
-  padding: 6px;
-}}
-.filter-section.flags {{
-  grid-column: 1 / -1;
-}}
-.filter-section.flags .controls {{
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}}
-.filter-section.flags .description {{
-  -webkit-line-clamp: 1;
-}}
-h2 {{
-  margin: 0 0 4px;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 650;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-}}
-.controls {{
-  display: grid;
-  gap: 5px;
-}}
-.control {{
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-soft);
-  padding: 5px;
-}}
-.control.active {{
-  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
-  background: var(--accent-soft);
-}}
-.control-head {{
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 6px;
-  align-items: center;
-}}
-.label {{
-  color: var(--text);
-  font-weight: 620;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}}
-.value {{
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: right;
-}}
-.description {{
-  color: var(--muted);
-  font-size: 10.5px;
-  margin: 3px 0 5px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}}
-.select-row {{
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 5px;
-}}
-select {{
-  width: 100%;
-  min-width: 0;
-  height: 24px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-  padding: 0 6px;
-}}
-button {{
-  height: 24px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-}}
-button:hover, select:hover {{
-  border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
-}}
-.segments {{
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
-}}
-.segments.boolean {{
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}}
-.segments button {{
-  min-width: 0;
-  padding: 0 5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}}
-.segments button.selected {{
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}}
-.chips {{
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 5px;
-}}
-.selected-chip {{
-  max-width: 100%;
-  height: 20px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 5px;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-}}
-.selected-chip span {{
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}}
-.selected-chip b {{
-  color: var(--danger);
-  font-weight: 700;
-}}
-.clear {{
-  padding: 0 7px;
-  color: var(--muted);
-}}
-.clear-all {{
-  padding: 0 8px;
-  color: var(--muted);
-}}
-.header-actions {{
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}}
-@media (max-width: 760px) {{
-  .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-  .filter-section.flags .controls {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-}}
-@media (max-width: 520px) {{
-  body {{ padding: 8px; }}
-  .grid {{ grid-template-columns: 1fr; }}
-  .filter-section.flags .controls {{ grid-template-columns: 1fr; }}
-}}
-</style>
-</head>
-<body>
-  <div class="header">
-    <div class="count" id="count">0 active filters</div>
-    <div class="header-actions">
-      <button class="clear-all" data-action="clear-all">Clear all</button>
-    </div>
-  </div>
-  <main class="grid" id="filters"></main>
-  <script>
-    (() => {{
-      const sections = {controls_json};
-      const state = {initial_state_json};
-      const controls = sections.flatMap((section) => section.controls);
-      const byName = new Map(controls.map((control) => [control.name, control]));
-      const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({{
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        "\\"": "&quot;",
-        "'": "&#39;"
-      }}[char]));
-      const splitValues = (value) => String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
-      const selectedValues = (control) => {{
-        const raw = state[control.name] ?? control.defaultValue ?? "";
-        if (control.name === "states" && (!raw || raw === "ALL")) return [];
-        if (!raw) return [];
-        return splitValues(raw).filter((value) => value !== "ALL");
-      }};
-      const optionLabel = (control, value) => {{
-        const option = control.options.find((item) => item.value === value);
-        return option?.label || value || `All ${{control.label}}`;
-      }};
-      const isActive = (control) => {{
-        const raw = state[control.name] ?? control.defaultValue ?? "";
-        if (control.name === "states") return Boolean(raw && raw !== "ALL");
-        return raw !== "";
-      }};
-      const displayValue = (control) => {{
-        if (control.multiSelect) {{
-          const values = selectedValues(control);
-          if (values.length === 0) return control.name === "states" ? "All States" : "All";
-          return values.map((value) => optionLabel(control, value)).join(", ");
-        }}
-        if (control.isTernaryBoolean && !(state[control.name] ?? "")) return "Any";
-        return optionLabel(control, state[control.name] ?? control.defaultValue ?? "");
-      }};
-      const activeCount = () => controls.reduce((count, control) => count + (isActive(control) ? 1 : 0), 0);
-      const serialiseParams = () => Object.fromEntries(
-        controls.map((control) => [control.name, state[control.name] ?? control.defaultValue ?? ""])
-      );
-      const emitParams = (paramName) => {{
-        const params = serialiseParams();
-        const message = {{
-          type: "openbb:widget-params:update",
-          paramName,
-          value: paramName === "*" ? undefined : params[paramName],
-          params
-        }};
-        window.dispatchEvent(new CustomEvent("openbb:widget-params:update", {{ detail: message }}));
-        if (window.parent && window.parent !== window) {{
-          window.parent.postMessage(message, "*");
-        }}
-      }};
-      const setValue = (control, value) => {{
-        state[control.name] = value || control.defaultValue || "";
-        if (control.name === "states" && !state[control.name]) state[control.name] = "ALL";
-      }};
-      const toggleMultiValue = (control, value) => {{
-        if (!value || value === control.defaultValue) {{
-          setValue(control, control.defaultValue);
-          return;
-        }}
-        const values = selectedValues(control);
-        const next = values.includes(value)
-          ? values.filter((item) => item !== value)
-          : [...values, value];
-        setValue(control, next.length ? next.join(",") : control.defaultValue);
-      }};
-      const multiControl = (control) => {{
-        const chips = selectedValues(control).map((value) => `
-          <button class="selected-chip" data-action="remove" data-param="${{esc(control.name)}}" data-value="${{esc(value)}}" title="Remove ${{esc(optionLabel(control, value))}}">
-            <span>${{esc(optionLabel(control, value))}}</span><b>x</b>
-          </button>
-        `).join("");
-        const options = control.options.map((option) => `
-          <option value="${{esc(option.value)}}" title="${{esc(option.description)}}">${{esc(option.label)}}</option>
-        `).join("");
-        return `
-          <div class="chips">${{chips || `<span class="value">${{control.name === "states" ? "All States" : "All values"}}</span>`}}</div>
-          <div class="select-row">
-            <select data-action="select" data-param="${{esc(control.name)}}" aria-label="${{esc(control.label)}}">
-              <option value="">Add or toggle...</option>
-              ${{options}}
-            </select>
-            <button class="clear" data-action="clear" data-param="${{esc(control.name)}}">Clear</button>
-          </div>
-        `;
-      }};
-      const singleOptions = (control) => control.isTernaryBoolean
-        ? control.options.filter((option) => option.value !== "")
-        : control.options;
-      const singleOptionLabel = (control, option) => control.isTernaryBoolean
-        ? option.label.replace(/^(Yes|No):.*$/, "$1")
-        : option.label.replace(/^All /, "All ");
-      const segmentControl = (control) => `
-        <div class="segments ${{control.isTernaryBoolean ? "boolean" : ""}}">
-          ${{singleOptions(control).map((option) => `
-            <button data-action="set" data-param="${{esc(control.name)}}" data-value="${{esc(option.value)}}"
-              class="${{(state[control.name] ?? "") === option.value ? "selected" : ""}}"
-              title="${{esc(option.description)}}">
-              ${{esc(singleOptionLabel(control, option))}}
-            </button>
-          `).join("")}}
-        </div>
-      `;
-      const singleSelectControl = (control) => {{
-        const selected = state[control.name] ?? control.defaultValue ?? "";
-        const hasBlankOption = control.options.some((option) => option.value === "");
-        const blankOption = control.name === "states" || hasBlankOption
-          ? ""
-          : `<option value="" ${{!selected ? "selected" : ""}}>All ${{esc(control.label)}}</option>`;
-        const options = control.options.map((option) => `
-          <option value="${{esc(option.value)}}"
-            ${{selected === option.value ? "selected" : ""}}
-            title="${{esc(option.description)}}">
-            ${{esc(option.label)}}
-          </option>
-        `).join("");
-        return `
-          <div class="select-row">
-            <select data-action="single-select" data-param="${{esc(control.name)}}" aria-label="${{esc(control.label)}}">
-              ${{blankOption}}
-              ${{options}}
-            </select>
-            <button class="clear" data-action="clear" data-param="${{esc(control.name)}}">Clear</button>
-          </div>
-        `;
-      }};
-      const singleControl = (control) => control.isTernaryBoolean
-        ? segmentControl(control)
-        : singleSelectControl(control);
-      const controlMarkup = (control) => `
-        <article class="control ${{isActive(control) ? "active" : ""}}" data-control="${{esc(control.name)}}">
-          <div class="control-head">
-            <div class="label" title="${{esc(control.label)}}">${{esc(control.label)}}</div>
-            <div class="value" title="${{esc(displayValue(control))}}">${{esc(displayValue(control))}}</div>
-          </div>
-          <p class="description" title="${{esc(control.description)}}">${{esc(control.description)}}</p>
-          ${{control.multiSelect ? multiControl(control) : singleControl(control)}}
-        </article>
-      `;
-      const render = () => {{
-        document.getElementById("count").textContent = `${{activeCount()}} active filters`;
-        document.getElementById("filters").innerHTML = sections.map((section) => `
-          <section class="filter-section ${{section.title === "Flags" ? "flags" : ""}}">
-            <h2>${{esc(section.title)}}</h2>
-            <div class="controls">${{section.controls.map(controlMarkup).join("")}}</div>
-          </section>
-        `).join("");
-      }};
-      document.addEventListener("change", (event) => {{
-        const target = event.target.closest("[data-action='select'], [data-action='single-select']");
-        if (!target) return;
-        const control = byName.get(target.dataset.param);
-        if (!control) return;
-        if (target.dataset.action === "single-select") {{
-          setValue(control, target.value);
-        }} else {{
-          toggleMultiValue(control, target.value);
-          target.value = "";
-        }}
-        render();
-        emitParams(control.name);
-      }});
-      document.addEventListener("click", (event) => {{
-        const target = event.target.closest("[data-action]");
-        if (!target || target.dataset.action === "select" || target.dataset.action === "single-select") return;
-        if (target.dataset.action === "clear-all") {{
-          controls.forEach((control) => setValue(control, control.defaultValue));
-          render();
-          emitParams("*");
-          return;
-        }}
-        const control = byName.get(target.dataset.param);
-        if (!control) return;
-        if (target.dataset.action === "clear") setValue(control, control.defaultValue);
-        if (target.dataset.action === "remove") toggleMultiValue(control, target.dataset.value);
-        if (target.dataset.action === "set") {{
-          const nextValue = control.isTernaryBoolean && (state[control.name] ?? "") === target.dataset.value
-            ? control.defaultValue
-            : target.dataset.value;
-          setValue(control, nextValue);
-        }}
-        render();
-        emitParams(control.name);
-      }});
-      render();
-    }})();
-  </script>
-</body>
-</html>"""
+    html = render_market_activity_filters_page(
+        theme=resolved_theme,
+        controls_json=controls_json,
+        initial_state_json=initial_state_json,
+    )
     return HTMLResponse(content=html, headers=_NO_CACHE_HEADERS)
 
 
