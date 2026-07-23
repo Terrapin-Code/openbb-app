@@ -73,6 +73,7 @@ def build_apps() -> dict[str, Any]:
                         "state": {
                             "params": {
                                 "maturity_date_min": today_iso(),
+                                "sectors": "ALL",
                             },
                             "chartView": {
                                 "enabled": False,
@@ -285,7 +286,7 @@ def build_apps() -> dict[str, Any]:
                 "name": "Group 6",
                 "type": "param",
                 "paramName": "sectors",
-                "defaultValue": "",
+                "defaultValue": "ALL",
             },
             {
                 "name": "Group 7",

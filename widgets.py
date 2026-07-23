@@ -8,6 +8,7 @@ from typing import Any
 
 DEFAULT_CUSIP = "74445MAB5"
 ALL_STATES = "ALL"
+ALL_SECTORS = "ALL"
 
 
 def last_complete_month_end(today: date | None = None) -> str:
@@ -304,6 +305,7 @@ OptionPair = tuple[str, str] | tuple[str, str, str] | tuple[str, str, str, str]
 
 OPTION_DESCRIPTIONS = {
     "ALL": "Use the nationwide municipal bond universe.",
+    "ALL_SECTORS": "Include bonds from every sector.",
     "Revenue": "Repaid from specific project revenues such as tolls or utilities.",
     "General Obligation": "Repaid from the issuer's general fund.",
     "Double Barrel": "Combines General Obligation and Revenue repayment sources.",
@@ -421,6 +423,18 @@ def _state_options() -> list[dict[str, Any]]:
     ]
 
 
+def _all_sectors_option() -> dict[str, Any]:
+    return _option("All Sectors", ALL_SECTORS, OPTION_DESCRIPTIONS["ALL_SECTORS"])
+
+
+def _issuer_sector_options() -> list[dict[str, Any]]:
+    return [_all_sectors_option(), *_options(ISSUER_SECTORS)]
+
+
+def _use_sector_options() -> list[dict[str, Any]]:
+    return [_all_sectors_option(), *_options(USE_SECTORS)]
+
+
 def _param(
     param_name: str,
     *,
@@ -482,24 +496,24 @@ def sources_of_repayment_param(*, value: str = "") -> dict[str, Any]:
     )
 
 
-def issuer_sectors_param(*, value: str = "") -> dict[str, Any]:
+def issuer_sectors_param(*, value: str = ALL_SECTORS) -> dict[str, Any]:
     return _param(
         "sectors",
         label="Sectors",
-        description="Bond issuer sectors",
+        description="Bond issuer sectors, or All Sectors for every sector",
         value=value,
-        options=_options(ISSUER_SECTORS),
+        options=_issuer_sector_options(),
         multi_select=True,
     )
 
 
-def use_sectors_param(*, value: str = "") -> dict[str, Any]:
+def use_sectors_param(*, value: str = ALL_SECTORS) -> dict[str, Any]:
     return _param(
         "sectors",
         label="Use Sectors",
-        description="Top-level use-of-funds sector.",
+        description="Top-level use-of-funds sector, or All Sectors for every sector",
         value=value,
-        options=_options(USE_SECTORS),
+        options=_use_sector_options(),
         multi_select=True,
     )
 
